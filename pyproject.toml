@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arkparser"
-version = "0.1.0"
+version = "0.1.1"
 description = "Pure Python parser for ARK: Survival Evolved and ARK: Survival Ascended save files"
 readme = "README.md"
 license = "MIT"
