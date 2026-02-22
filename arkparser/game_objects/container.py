@@ -123,10 +123,7 @@ class GameObjectContainer:
 
     def get_creatures(self) -> list[GameObject]:
         """Get all creature objects (tamed and wild)."""
-        return [
-            obj for obj in self.objects
-            if "_Character_BP" in obj.class_name or "DinoCharacter" in obj.class_name
-        ]
+        return [obj for obj in self.objects if "_Character_BP" in obj.class_name or "DinoCharacter" in obj.class_name]
 
     def get_items(self) -> list[GameObject]:
         """Get all item objects."""
@@ -149,6 +146,64 @@ class GameObjectContainer:
     def get_player_pawns(self) -> list[GameObject]:
         """Get player character objects on the map."""
         return [obj for obj in self.objects if "PlayerPawn" in obj.class_name]
+
+    def get_terminals(self) -> list[GameObject]:
+        """Get map-placed terminal objects (tribute terminals, city terminals).
+
+        Inventory components and item sub-objects are excluded.
+        """
+        return [
+            obj
+            for obj in self.objects
+            if ("TributeTerminal" in obj.class_name or "CityTerminal" in obj.class_name)
+            and not obj.is_item
+            and "Inventory" not in obj.class_name
+            and "PrimalItem" not in obj.class_name
+        ]
+
+    def get_supply_drops(self) -> list[GameObject]:
+        """Get active supply-drop / loot-crate objects on the map.
+
+        Inventory components are excluded.
+        """
+        _SUPPLY_PATTERNS = ("SupplyCrate", "OrbitalSupply", "SupplyDrop")
+        return [
+            obj
+            for obj in self.objects
+            if any(p in obj.class_name for p in _SUPPLY_PATTERNS)
+            and "Inventory" not in obj.class_name
+            and not obj.is_item
+        ]
+
+    def get_artifact_crates(self) -> list[GameObject]:
+        """Get artifact-crate spawn objects. Inventory components are excluded."""
+        return [
+            obj
+            for obj in self.objects
+            if "ArtifactCrate" in obj.class_name and "Inventory" not in obj.class_name and not obj.is_item
+        ]
+
+    def get_map_resources(self) -> list[GameObject]:
+        """Get engine-placed resource / vein / node objects.
+
+        Covers oil veins, water veins, gas veins, charge nodes, element
+        veins, and beaver dams.  Inventory components are excluded.
+        """
+        _RESOURCE_PATTERNS = (
+            "OilVein",
+            "WaterVein",
+            "GasVein",
+            "ChargeNode",
+            "ElementVein",
+            "BeaverDam",
+        )
+        return [
+            obj
+            for obj in self.objects
+            if any(p in obj.class_name for p in _RESOURCE_PATTERNS)
+            and "Inventory" not in obj.class_name
+            and not obj.is_item
+        ]
 
     def get_players(self) -> list[GameObject]:
         """Get all player data objects."""

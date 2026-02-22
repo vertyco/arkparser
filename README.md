@@ -304,6 +304,10 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 | `get_wild_creatures()` | `list[GameObject]` | Wild creatures only |
 | `get_structures()` | `list[GameObject]` | Tribe-owned placed structures |
 | `get_player_pawns()` | `list[GameObject]` | Player characters on the map |
+| `get_terminals()` | `list[GameObject]` | Obelisks / tribute terminals / city terminals |
+| `get_supply_drops()` | `list[GameObject]` | Active supply crates on the map |
+| `get_artifact_crates()` | `list[GameObject]` | Artifact spawn crates |
+| `get_map_resources()` | `list[GameObject]` | Oil/water/gas veins, charge nodes, beaver dams |
 | `get_items()` | `list[GameObject]` | Item objects |
 | `get_objects_by_class(class_name: str)` | `list[GameObject]` | Objects matching class name substring |
 | `get_object_by_guid(guid: str)` | `GameObject \| None` | Lookup by GUID (ASA) |
@@ -356,6 +360,10 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 | `get_creatures()` | `list[GameObject]` | All creatures |
 | `get_structures()` | `list[GameObject]` | Tribe-owned structures |
 | `get_player_pawns()` | `list[GameObject]` | Player characters on map |
+| `get_terminals()` | `list[GameObject]` | Obelisks / tribute terminals / city terminals |
+| `get_supply_drops()` | `list[GameObject]` | Active supply crates |
+| `get_artifact_crates()` | `list[GameObject]` | Artifact spawn crates |
+| `get_map_resources()` | `list[GameObject]` | Oil/water/gas veins, charge nodes, beaver dams |
 | `get_players()` | `list[GameObject]` | Player data objects |
 | `get_items()` | `list[GameObject]` | Item objects |
 

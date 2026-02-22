@@ -221,43 +221,31 @@ class WorldSave:
     # Class-name patterns that are never structures even though they may
     # carry ``TargetingTeam``.  Checked via ``any(pat in cn for pat ...)``.
     _NON_STRUCTURE_PATTERNS: t.ClassVar[tuple[str, ...]] = (
-        "_Character_BP",   # Creatures / tamed dinos
-        "DinoCharacter",   # Creature variants
-        "PlayerPawn",      # Player avatars on the map
-        "Buff_",           # Active buffs
-        "PrimalBuff",      # Persistent buff data
-        "Weap",            # Held weapons
+        "_Character_BP",  # Creatures / tamed dinos
+        "DinoCharacter",  # Creature variants
+        "PlayerPawn",  # Player avatars on the map
+        "Buff_",  # Active buffs
+        "PrimalBuff",  # Persistent buff data
+        "Weap",  # Held weapons
         "StatusComponent",  # Character/dino status components
-        "Inventory",       # Inventory components
-        "DroppedItem",     # Dropped items
+        "Inventory",  # Inventory components
+        "DroppedItem",  # Dropped items
         "DeathItemCache",  # Death caches
-        "NPCZone",        # NPC spawn zones
+        "NPCZone",  # NPC spawn zones
         "DinoDropInventory",  # Dino death drops
     )
 
     def get_creatures(self) -> list[GameObject]:
         """Return all creature objects (tamed **and** wild)."""
-        return [
-            obj
-            for obj in self.objects
-            if "_Character_BP" in obj.class_name or "DinoCharacter" in obj.class_name
-        ]
+        return [obj for obj in self.objects if "_Character_BP" in obj.class_name or "DinoCharacter" in obj.class_name]
 
     def get_tamed_creatures(self) -> list[GameObject]:
         """Return tamed creatures (have ``TamingTeamID`` property)."""
-        return [
-            obj
-            for obj in self.get_creatures()
-            if obj.get_property_value("TamingTeamID") is not None
-        ]
+        return [obj for obj in self.get_creatures() if obj.get_property_value("TamingTeamID") is not None]
 
     def get_wild_creatures(self) -> list[GameObject]:
         """Return wild creatures (no ``TamingTeamID`` property)."""
-        return [
-            obj
-            for obj in self.get_creatures()
-            if obj.get_property_value("TamingTeamID") is None
-        ]
+        return [obj for obj in self.get_creatures() if obj.get_property_value("TamingTeamID") is None]
 
     def get_structures(self) -> list[GameObject]:
         """Return tribe-owned placed structures.
@@ -293,6 +281,86 @@ class WorldSave:
     def get_items(self) -> list[GameObject]:
         """Return objects with ``is_item`` set."""
         return [obj for obj in self.objects if obj.is_item]
+
+    # ---- Map / engine-placed entities --------------------------------
+
+    def get_terminals(self) -> list[GameObject]:
+        """Return map-placed terminal objects.
+
+        Covers tribute terminals (obelisks on The Island, Ragnarok, etc.),
+        Extinction city terminals, and any variant using ``TributeTerminal``
+        or ``CityTerminal`` in the class name.  These are engine-placed and
+        have **no** ``TargetingTeam``.
+
+        Inventory components and item sub-objects attached to terminals are
+        excluded — only the top-level structure actors are returned.
+        """
+        return [
+            obj
+            for obj in self.objects
+            if ("TributeTerminal" in obj.class_name or "CityTerminal" in obj.class_name)
+            and not obj.is_item
+            and "Inventory" not in obj.class_name
+            and "PrimalItem" not in obj.class_name
+        ]
+
+    def get_supply_drops(self) -> list[GameObject]:
+        """Return active supply-drop / loot-crate objects on the map.
+
+        Matches ``SupplyCrate``, ``OrbitalSupply``, and ``SupplyDrop``
+        class-name substrings.  Inventory components are excluded.
+        """
+        _SUPPLY_PATTERNS = ("SupplyCrate", "OrbitalSupply", "SupplyDrop")
+        return [
+            obj
+            for obj in self.objects
+            if any(p in obj.class_name for p in _SUPPLY_PATTERNS)
+            and "Inventory" not in obj.class_name
+            and not obj.is_item
+        ]
+
+    def get_artifact_crates(self) -> list[GameObject]:
+        """Return artifact-crate spawn objects.
+
+        These are the map-placed crates that contain artifacts for boss
+        fights (e.g. ``ArtifactCrate_Desert_Kaiju_EX_C``).
+        Inventory components are excluded.
+        """
+        return [
+            obj
+            for obj in self.objects
+            if "ArtifactCrate" in obj.class_name and "Inventory" not in obj.class_name and not obj.is_item
+        ]
+
+    def get_map_resources(self) -> list[GameObject]:
+        """Return engine-placed resource / vein / node objects.
+
+        Covers map-specific harvestable resource objects:
+
+        * Oil veins (The Island, Ragnarok, …)  — ``OilVein``
+        * Water veins (Scorched Earth, …)       — ``WaterVein``
+        * Gas veins (Scorched Earth, …)         — ``GasVein``
+        * Charge nodes (Aberration)             — ``ChargeNode``
+        * Element veins (Extinction)            — ``ElementVein``
+        * Beaver dams                           — ``BeaverDam``
+
+        Inventory components attached to these are excluded.
+        """
+        _RESOURCE_PATTERNS = (
+            "OilVein",
+            "WaterVein",
+            "GasVein",
+            "ChargeNode",
+            "ElementVein",
+            "BeaverDam",
+        )
+        return [
+            obj
+            for obj in self.objects
+            if any(p in obj.class_name for p in _RESOURCE_PATTERNS)
+            and "Inventory" not in obj.class_name
+            and not obj.is_item
+        ]
 
     # ------------------------------------------------------------------
     # Properties
