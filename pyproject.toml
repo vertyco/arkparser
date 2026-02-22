@@ -1,0 +1,86 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "arkparser"
+version = "0.1.0"
+description = "Pure Python parser for ARK: Survival Evolved and ARK: Survival Ascended save files"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Vertyco" }]
+keywords = [
+    "ark",
+    "survival",
+    "evolved",
+    "ascended",
+    "savegame",
+    "parser",
+    "binary",
+    "ase",
+    "asa",
+    "game",
+    "save-file",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Games/Entertainment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0", "ruff>=0.15", "build>=1.4", "twine>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/vertyco/arkparser"
+Repository = "https://github.com/vertyco/arkparser"
+Documentation = "https://github.com/vertyco/arkparser#readme"
+Issues = "https://github.com/vertyco/arkparser/issues"
+
+[tool.setuptools.packages.find]
+include = ["arkparser*"]
+exclude = ["*tests*", "references*"]
+
+[tool.setuptools.package-data]
+arkparser = ["py.typed"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+exclude = ["references/", ".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E501"]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-line-length = "dynamic"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

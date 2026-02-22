@@ -1,0 +1,27 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: (?x)(tests/|README.md|references/)
+      - id: end-of-file-fixer
+        exclude: (?x)(tests/|README.md|references/)
+      - id: check-yaml
+        exclude: (?x)(tests/|README.md|references/)
+      - id: debug-statements
+        exclude: (?x)(tests/|README.md|references/)
+      - id: requirements-txt-fixer
+        exclude: (?x)(tests/|README.md|references/)
+  - repo: https://github.com/PyCQA/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        exclude: (?x)(tests/|README.md|references/)
+  - repo: https://github.com/charliermarsh/ruff-pre-commit
+    rev: v0.1.13
+    hooks:
+      - id: ruff
+        args: [--fix]
+ci:
+    autofix_commit_msg: 🎨 [pre-commit.ci] Auto format from pre-commit.com hooks
+    autoupdate_commit_msg: ⬆ [pre-commit.ci] pre-commit autoupdate
