@@ -56,12 +56,18 @@ class CloudInventory(ArkFile):
         - Object headers (ASE format)
         - Properties
 
-        ASA format:
-        - Int32 version
-        - Int32 unknown1 (extra field)
-        - Int32 unknown2 (extra field)
+        ASA v7 format:
+        - Int32 version (7)
+        - Int32 unknown1 (extra field, v7+ only)
+        - Int32 unknown2 (extra field, v7+ only)
         - Int32 object_count
         - Object headers (ASA format with GUIDs)
+        - Properties
+
+        ASA v6 format (solo-cluster / cross-ARK transfer files):
+        - Int32 version (6)
+        - Int32 object_count
+        - Object headers (ASA format with GUIDs — no extra header fields)
         - Properties
         """
         # Read version
@@ -73,8 +79,8 @@ class CloudInventory(ArkFile):
         # Detect ASE vs ASA
         is_asa = cls._detect_asa(reader, version)
 
-        if is_asa:
-            # ASA has extra header fields
+        if is_asa and version >= 7:
+            # v7+ ASA has two extra header fields before object_count
             _unknown1 = reader.read_int32()
             _unknown2 = reader.read_int32()
 
@@ -88,17 +94,23 @@ class CloudInventory(ArkFile):
         objects: list[GameObject] = []
         for i in range(object_count):
             if is_asa:
-                obj = cls._read_asa_object_header(reader, obj_id=i)
+                obj = cls._read_asa_object_header(reader, obj_id=i, version=version)
             else:
                 obj = GameObject.read_header(reader, obj_id=i, is_asa=False)
             objects.append(obj)
 
-        # Load properties for each object
+        # Load properties for each object.
+        # Version 6 ASA (cross-ARK / solecluster) uses ASA-style object headers
+        # but ASE-style (is_asa=False) properties. Only v7+ uses ASA properties.
+        properties_is_asa = version >= 7
         properties_block_offset = 0
         for i, obj in enumerate(objects):
             next_obj = objects[i + 1] if i + 1 < len(objects) else None
             obj.load_properties(
-                reader, properties_block_offset=properties_block_offset, is_asa=is_asa, next_object=next_obj
+                reader,
+                properties_block_offset=properties_block_offset,
+                is_asa=properties_is_asa,
+                next_object=next_obj,
             )
 
         # Build container with lookups
@@ -113,7 +125,7 @@ class CloudInventory(ArkFile):
         )
 
     @classmethod
-    def _read_asa_object_header(cls, reader: BinaryReader, obj_id: int) -> GameObject:
+    def _read_asa_object_header(cls, reader: BinaryReader, obj_id: int, version: int = 7) -> GameObject:
         """
         Read an ASA object header.
 
@@ -123,7 +135,10 @@ class CloudInventory(ArkFile):
         - Field1 (int32)
         - Field2 (int32)
         - Instance name (string)
-        - Padding (21 bytes)
+        - Padding (21 bytes for v7+, 20 bytes for v6)
+
+        Version 6 (cross-ARK / solecluster files) uses a slightly older format
+        with one fewer padding byte before the properties block.
         """
         obj = GameObject(id=obj_id)
 
@@ -142,8 +157,9 @@ class CloudInventory(ArkFile):
         instance_name = reader.read_string()
         obj.names = [instance_name] if instance_name else []
 
-        # Skip 21 bytes of padding
-        reader.skip(21)
+        # v7+ uses 21 bytes of padding; v6 (cross-ARK / solecluster) uses 20
+        padding_size = 21 if version >= 7 else 20
+        reader.skip(padding_size)
 
         # Properties offset will be set by sequential reading
         obj.properties_offset = reader.position
