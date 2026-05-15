@@ -521,13 +521,23 @@ def _export_profile_parser(profile: Profile) -> dict[str, t.Any]:
     }
     steam_id = profile.unique_id or ""
 
+    # The C# reference treats these as two distinct names:
+    #   Name (ContentPlayer.cs:77)         -> platform gamertag (PlayerName field)
+    #   CharacterName (ContentPlayer.cs:86) -> in-game name (PlayerCharacterName field)
+    # Export contract mirrors that split: ``steam`` = gamertag, ``name`` =
+    # in-game character name. Falls back to the gamertag if the character
+    # config struct is absent (matches the C# `?? Name` fallback).
+    gamertag = profile.player_name or ""
+    character_name = profile.character_name or gamertag
+    is_female = profile.is_female
+
     result: dict[str, t.Any] = {
         "playerid": profile.player_id or 0,
-        "steam": "",
-        "name": profile.player_name or "",
+        "steam": gamertag,
+        "name": character_name,
         "tribeid": profile.tribe_id or 0,
         "tribe": profile.tribe_name or "",
-        "sex": "",
+        "sex": "Female" if is_female is True else "Male",
         "lvl": profile.level,
         "hp": stats["health"],
         "stam": stats["stamina"],

@@ -63,7 +63,7 @@ A pure-Python library for parsing ARK: Survival Evolved (ASE) and ARK: Survival 
 
 ## Features
 
-- **Player Profiles** (`.arkprofile`): character name, level, stats, engrams
+- **Player Profiles** (`.arkprofile`): platform gamertag, character name, level, stats, engrams
 - **Tribe Data** (`.arktribe`): members, ranks, logs, alliances
 - **Cloud Inventory / Obelisk**: uploaded creatures, items, cryopod contents
 - **World Saves** (`.ark`): full map state, including creatures, structures, items, and players
@@ -88,7 +88,8 @@ from arkparser import Profile
 
 profile = Profile.load("path/to/player.arkprofile")  # auto-detects ASE/ASA
 
-print(profile.player_name)         # "SomePlayer"
+print(profile.player_name)         # Platform gamertag / display name
+print(profile.character_name)      # In-game character name
 print(profile.level)               # 105
 print(profile.tribe_id)            # 1729028872
 print(profile.engram_blueprints)   # ["EngramEntry_Campfire_C", ...]
@@ -224,11 +225,13 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 | Property | Type | Description |
 |---|---|---|
-| `player_name` | `str \| None` | Character name |
+| `player_name` | `str \| None` | Platform gamertag / display name |
+| `character_name` | `str \| None` | In-game character name, falling back to `player_name` when absent |
 | `player_id` | `int \| None` | Unique player ID |
 | `unique_id` | `str \| None` | Platform ID (Steam/Xbox numeric ID) |
 | `tribe_id` | `int \| None` | Tribe ID (handles ASE `TribeId` / ASA `TribeID`) |
 | `tribe_name` | `str \| None` | Always `None`; tribe name is not stored in profiles |
+| `is_female` | `bool \| None` | Parsed gender flag (`True` = female, `False` = male, `None` = absent) |
 | `level` | `int` | Current level (`ExtraCharacterLevel + 1`) |
 | `experience` | `float` | Total XP |
 | `total_engram_points` | `int` | Engram points spent |

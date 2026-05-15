@@ -16,7 +16,8 @@ Example usage:
     >>>
     >>> # Load a player profile
     >>> profile = Profile.load("path/to/profile.arkprofile")
-    >>> print(f"Player: {profile.player_name}")
+    >>> print(f"Gamertag: {profile.player_name}")
+    >>> print(f"Character: {profile.character_name}")
     >>>
     >>> # Load tribe data
     >>> tribe = Tribe.load("path/to/tribe.arktribe")

@@ -2,7 +2,7 @@
 Player profile parser for .arkprofile files.
 
 Profile files contain player character data including:
-- Character name and stats
+- Platform gamertag and character name
 - Level and experience
 - Engrams learned
 - Inventory items (if saved)
@@ -28,7 +28,8 @@ class Profile(ArkFile):
 
     Example usage:
         >>> profile = Profile.load("examples/ase/map_save/2533274977850953.arkprofile")
-        >>> print(f"Player: {profile.player_name}")
+        >>> print(f"Gamertag: {profile.player_name}")
+        >>> print(f"Character: {profile.character_name}")
         >>> print(f"Level: {profile.level}")
     """
 
@@ -70,8 +71,52 @@ class Profile(ArkFile):
 
     @property
     def player_name(self) -> str | None:
-        """Get the player's character name."""
+        """Get the player's platform gamertag (Steam / Xbox / PSN display name).
+
+        Note: despite the historical name, this is NOT the in-game character
+        name. For that, use ``character_name``. The C# reference (ContentPlayer.cs
+        line 77) reads this same ``PlayerName`` field into its ``Name`` property.
+        """
         return self._player_data.get("PlayerName")
+
+    @property
+    def character_name(self) -> str | None:
+        """Get the player's in-game character name.
+
+        Purpose: returns the name the player chose when creating their
+        character (e.g. "Alex"), distinct from the platform gamertag (e.g.
+        "Itz0Alex") which ``player_name`` returns.
+        Preconditions: profile file is loaded; ``_player_data`` is accessible.
+        Postconditions: returns ``MyPlayerCharacterConfig.PlayerCharacterName``
+        when present, including empty-string values, falling back to
+        ``player_name`` (gamertag) only when the config field is absent -
+        matches the C# reference behavior
+        (ContentPlayer.cs line 86: ``CharacterName = playerConfig.GetPropertyValue<string>("PlayerCharacterName") ?? Name;``).
+        Side effects: none.
+        Failure modes: returns ``None`` only when both the config struct and
+        ``PlayerName`` are missing.
+        """
+        config = self._player_data.get("MyPlayerCharacterConfig")
+        if isinstance(config, dict):
+            character_name = config.get("PlayerCharacterName")
+            if character_name is not None:
+                return character_name
+        return self.player_name
+
+    @property
+    def is_female(self) -> bool | None:
+        """Get the player's character gender (True = female, False = male, None = unknown).
+
+        Same nested location as ``character_name``: read from
+        ``MyPlayerCharacterConfig.bIsFemale``. Returns None when the config
+        struct is absent (treat as gender unknown / default male in display code).
+        """
+        config = self._player_data.get("MyPlayerCharacterConfig")
+        if isinstance(config, dict):
+            value = config.get("bIsFemale")
+            if value is not None:
+                return bool(value)
+        return None
 
     @property
     def player_id(self) -> int | None:
@@ -202,10 +247,12 @@ class Profile(ArkFile):
         base_dict.update(
             {
                 "player_name": self.player_name,
+                "character_name": self.character_name,
                 "player_id": self.player_id,
                 "unique_id": self.unique_id,
                 "tribe_id": self.tribe_id,
                 "tribe_name": self.tribe_name,
+                "is_female": self.is_female,
                 "experience": self.experience,
                 "total_engram_points": self.total_engram_points,
             }
