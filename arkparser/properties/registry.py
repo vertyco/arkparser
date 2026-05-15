@@ -11,6 +11,8 @@ import typing as t
 
 from ..common.binary_reader import BinaryReader
 from ..common.exceptions import UnknownPropertyError
+from ..structs import registry as struct_registry
+from . import compound as compound_properties
 from .base import NameTable, Property, PropertyHeader, read_property_header
 from .byte_property import ByteProperty
 from .compound import ArrayProperty, MapProperty, StructProperty
@@ -234,3 +236,8 @@ def get_property_value(
         if index is not None and prop_or_list.index != index:
             return default
         return prop_or_list.value
+
+
+compound_properties.set_property_reader(read_property)
+compound_properties.set_properties_reader(read_properties)
+struct_registry.set_property_reader(read_property)

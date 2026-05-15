@@ -102,6 +102,8 @@ class Character:
         val = self._game_object.get_property_value("TargetingTeam", default=0)
         if not val:
             val = self._game_object.get_property_value("TribeID", default=0)
+        if not val:
+            val = self._game_object.get_property_value("TribeId", default=0)
         return int(val) if val else 0
 
     @property
@@ -153,17 +155,18 @@ class Character:
 
     @property
     def stats(self) -> CreatureStats:
-        """
-        Character stat points.
-
-        Uses the same 12-stat system as creatures.
-        """
+        """Character stat points (same 12-stat system as creatures)."""
         if self._stats is None:
-            points = []
-            if self._status_object:
-                for i in range(12):
-                    val = self._status_object.get_property_value("NumberOfLevelUpPointsApplied", index=i, default=0)
-                    points.append(int(val) if val else 0)
+            points = (
+                [
+                    int(v)
+                    if (v := self._status_object.get_property_value("NumberOfLevelUpPointsApplied", index=i, default=0))
+                    else 0
+                    for i in range(12)
+                ]
+                if self._status_object
+                else []
+            )
             self._stats = CreatureStats.from_array(points)
         return self._stats
 

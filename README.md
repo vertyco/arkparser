@@ -63,13 +63,13 @@ A pure-Python library for parsing ARK: Survival Evolved (ASE) and ARK: Survival 
 
 ## Features
 
-- **Player Profiles** (`.arkprofile`) — character name, level, stats, engrams
-- **Tribe Data** (`.arktribe`) — members, ranks, logs, alliances
-- **Cloud Inventory / Obelisk** — uploaded creatures, items, cryopod contents
-- **World Saves** (`.ark`) — full map state: creatures, structures, items, players
-- **Dual Format** — automatic ASE (v5-6) / ASA (v7+, SQLite) detection
-- **Export** — ASV-compatible JSON export with GPS coordinate conversion
-- **Typed** — full type annotations, `py.typed` marker
+- **Player Profiles** (`.arkprofile`): character name, level, stats, engrams
+- **Tribe Data** (`.arktribe`): members, ranks, logs, alliances
+- **Cloud Inventory / Obelisk**: uploaded creatures, items, cryopod contents
+- **World Saves** (`.ark`): full map state, including creatures, structures, items, and players
+- **Dual Format**: automatic ASE (v5-6) / ASA (v7+, SQLite) detection
+- **Export**: native JSON export with optional ASV-compatible naming and GPS coordinate conversion
+- **Typed**: full type annotations, `py.typed` marker
 
 ## Installation
 
@@ -137,7 +137,7 @@ for item in inv.uploaded_items:
 ```python
 from arkparser import WorldSave
 
-# Works with both ASE (binary) and ASA (SQLite) — auto-detected
+# Works with both ASE (binary) and ASA (SQLite); auto-detected
 save = WorldSave.load("path/to/Extinction.ark")       # ASE
 save = WorldSave.load("path/to/Extinction_WP.ark")    # ASA
 
@@ -163,7 +163,7 @@ for obj in save.objects:
         print(f"{tamed.name} Lv{tamed.level}")
 ```
 
-### JSON Export (ASV-compatible)
+### JSON Export
 
 ```python
 from arkparser import export_all
@@ -171,7 +171,7 @@ from arkparser.common import get_map_config
 
 map_config = get_map_config("extinction.ark")
 data = export_all(save, map_config)
-# Returns: {"ASV_Tamed": [...], "ASV_Wild": [...], "ASV_Players": [...], ...}
+# Returns: {"tamed": [...], "wild": [...], "players": [...], ...}
 ```
 
 Or export to files:
@@ -180,6 +180,18 @@ Or export to files:
 from arkparser import export_to_files
 
 export_to_files(save, "output/", map_config)
+# Creates: tamed.json, wild.json, players.json, etc.
+```
+
+For compatibility with the original [ASV (Ark Save Visualizer)](https://github.com/miragedmuk/ASV) export naming:
+
+```python
+from arkparser import export_all, export_to_files
+
+data = export_all(save, map_config, naming="asv")
+# Returns: {"ASV_Tamed": [...], "ASV_Wild": [...], "ASV_Players": [...], ...}
+
+export_to_files(save, "output/", map_config, naming="asv")
 # Creates: ASV_Tamed.json, ASV_Wild.json, ASV_Players.json, etc.
 ```
 
@@ -208,7 +220,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### Profile
 
-`arkparser.files.profile.Profile` — Parser for `.arkprofile` player profile files.
+`arkparser.files.profile.Profile`: Parser for `.arkprofile` player profile files.
 
 | Property | Type | Description |
 |---|---|---|
@@ -216,7 +228,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 | `player_id` | `int \| None` | Unique player ID |
 | `unique_id` | `str \| None` | Platform ID (Steam/Xbox numeric ID) |
 | `tribe_id` | `int \| None` | Tribe ID (handles ASE `TribeId` / ASA `TribeID`) |
-| `tribe_name` | `str \| None` | Always `None` — tribe name is not stored in profiles |
+| `tribe_name` | `str \| None` | Always `None`; tribe name is not stored in profiles |
 | `level` | `int` | Current level (`ExtraCharacterLevel + 1`) |
 | `experience` | `float` | Total XP |
 | `total_engram_points` | `int` | Engram points spent |
@@ -234,7 +246,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### Tribe (File Parser)
 
-`arkparser.files.tribe.Tribe` — Parser for `.arktribe` tribe data files.
+`arkparser.files.tribe.Tribe`: Parser for `.arktribe` tribe data files.
 
 | Property | Type | Description |
 |---|---|---|
@@ -258,7 +270,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### CloudInventory
 
-`arkparser.files.cloud_inventory.CloudInventory` — Parser for obelisk/cloud inventory files. Also available as `Obelisk`.
+`arkparser.files.cloud_inventory.CloudInventory`: Parser for obelisk/cloud inventory files. Also available as `Obelisk`.
 
 | Property | Type | Description |
 |---|---|---|
@@ -278,7 +290,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### WorldSave
 
-`arkparser.files.world_save.WorldSave` — Unified parser for `.ark` world save files. Auto-detects ASE binary vs ASA SQLite.
+`arkparser.files.world_save.WorldSave`: Unified parser for `.ark` world save files. Auto-detects ASE binary vs ASA SQLite.
 
 | Property | Type | Description |
 |---|---|---|
@@ -320,7 +332,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### GameObject
 
-`arkparser.game_objects.game_object.GameObject` — The fundamental entity in ARK saves representing creatures, items, structures, players, etc.
+`arkparser.game_objects.game_object.GameObject`: The fundamental entity in ARK saves representing creatures, items, structures, players, etc.
 
 | Field | Type | Description |
 |---|---|---|
@@ -346,7 +358,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### GameObjectContainer
 
-`arkparser.game_objects.container.GameObjectContainer` — Relationship-aware container for game objects. Supports `len()`, iteration, and indexing.
+`arkparser.game_objects.container.GameObjectContainer`: Relationship-aware container for game objects. Supports `len()`, iteration, and indexing.
 
 | Method | Returns | Description |
 |---|---|---|
@@ -369,7 +381,7 @@ All file parsers support `load(source)` which accepts `str`, `Path`, or `bytes` 
 
 #### LocationData
 
-`arkparser.game_objects.location.LocationData` — 3D position and rotation.
+`arkparser.game_objects.location.LocationData`: 3D position and rotation.
 
 | Field | Type | Description |
 |---|---|---|
@@ -394,7 +406,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### TamedCreature
 
-`arkparser.models.creature.TamedCreature` — Tamed creature with full stats, breeding, and ownership data.
+`arkparser.models.creature.TamedCreature`: Tamed creature with full stats, breeding, and ownership data.
 
 | Property | Type | Description |
 |---|---|---|
@@ -436,7 +448,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### WildCreature
 
-`arkparser.models.creature.WildCreature` — Wild creature with level and stats.
+`arkparser.models.creature.WildCreature`: Wild creature with level and stats.
 
 | Property | Type | Description |
 |---|---|---|
@@ -456,7 +468,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### Player
 
-`arkparser.models.player.Player` — In-world player entity built from profile data.
+`arkparser.models.player.Player`: In-world player entity built from profile data.
 
 | Property | Type | Description |
 |---|---|---|
@@ -481,7 +493,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### Character
 
-`arkparser.models.character.Character` — Player character from the world save (`PlayerPawnTest_*` objects).
+`arkparser.models.character.Character`: Player character from the world save (`PlayerPawnTest_*` objects).
 
 | Property | Type | Description |
 |---|---|---|
@@ -503,7 +515,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### Structure
 
-`arkparser.models.structure.Structure` — Placed structure with ownership and state.
+`arkparser.models.structure.Structure`: Placed structure with ownership and state.
 
 | Property | Type | Description |
 |---|---|---|
@@ -526,7 +538,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### Item
 
-`arkparser.models.item.Item` — Inventory item with quality and stats.
+`arkparser.models.item.Item`: Inventory item with quality and stats.
 
 | Property | Type | Description |
 |---|---|---|
@@ -549,7 +561,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### TribeModel
 
-`arkparser.models.tribe.Tribe` — Tribe data model (distinct from the file parser `arkparser.files.Tribe`). Imported as `TribeModel` from the top-level package.
+`arkparser.models.tribe.Tribe`: Tribe data model (distinct from the file parser `arkparser.files.Tribe`). Imported as `TribeModel` from the top-level package.
 
 | Property | Type | Description |
 |---|---|---|
@@ -570,7 +582,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### TribeMember
 
-`arkparser.models.tribe.TribeMember` — Individual tribe member.
+`arkparser.models.tribe.TribeMember`: Individual tribe member.
 
 | Field | Type | Description |
 |---|---|---|
@@ -580,7 +592,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### TribeLogEntry
 
-`arkparser.models.tribe.TribeLogEntry` — Parsed tribe log entry.
+`arkparser.models.tribe.TribeLogEntry`: Parsed tribe log entry.
 
 | Field / Property | Type | Description |
 |---|---|---|
@@ -595,7 +607,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### CreatureStats
 
-`arkparser.models.stats.CreatureStats` — 12-stat named access for level-up points.
+`arkparser.models.stats.CreatureStats`: 12-stat named access for level-up points.
 
 | Field | Type | Description |
 |---|---|---|
@@ -621,7 +633,7 @@ High-level typed wrappers created from `GameObject` instances via `from_game_obj
 
 #### Location
 
-`arkparser.models.stats.Location` — 3D position with optional GPS conversion.
+`arkparser.models.stats.Location`: 3D position with optional GPS conversion.
 
 | Field | Type | Description |
 |---|---|---|
@@ -648,7 +660,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 #### UploadedCreature
 
-`arkparser.data_models.UploadedCreature` — Uploaded creature from obelisk data.
+`arkparser.data_models.UploadedCreature`: Uploaded creature from obelisk data.
 
 | Property | Type | Description |
 |---|---|---|
@@ -668,7 +680,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 #### UploadedItem
 
-`arkparser.data_models.UploadedItem` — Uploaded item from obelisk data.
+`arkparser.data_models.UploadedItem`: Uploaded item from obelisk data.
 
 | Property | Type | Description |
 |---|---|---|
@@ -689,7 +701,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 #### CryopodCreature
 
-`arkparser.data_models.CryopodCreature` — Creature stored inside a cryopod.
+`arkparser.data_models.CryopodCreature`: Creature stored inside a cryopod.
 
 | Property | Type | Description |
 |---|---|---|
@@ -712,7 +724,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 #### DinoStats
 
-`arkparser.data_models.DinoStats` — Creature stat values (current and max).
+`arkparser.data_models.DinoStats`: Creature stat values (current and max).
 
 | Field | Type | Description |
 |---|---|---|
@@ -736,7 +748,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 ### Export Functions
 
-`arkparser.export` — ASV-compatible JSON export. All functions accept a `WorldSave` and optional `MapConfig` for GPS conversion.
+`arkparser.export`: Native JSON export with optional ASV-compatible naming. All functions accept a `WorldSave` and optional `MapConfig` for GPS conversion.
 
 | Function | Returns | Description |
 |---|---|---|
@@ -753,7 +765,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 ### Map Config
 
-`arkparser.common.map_config` — GPS coordinate conversion for ARK maps.
+`arkparser.common.map_config`: GPS coordinate conversion for ARK maps.
 
 | Function | Returns | Description |
 |---|---|---|
@@ -767,7 +779,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 ### Version Detection
 
-`arkparser.common.version_detection` — File format identification.
+`arkparser.common.version_detection`: File format identification.
 
 | Function | Returns | Description |
 |---|---|---|
@@ -779,7 +791,7 @@ Lower-level data models for cloud inventory / obelisk data.
 
 ### Exceptions
 
-`arkparser.common.exceptions` — All exceptions inherit from `ArkParseError`.
+`arkparser.common.exceptions`: All exceptions inherit from `ArkParseError`.
 
 | Exception | Description |
 |---|---|

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 
 from arkparser.common.binary_reader import BinaryReader
 from arkparser.common.exceptions import ArkParseError
+from arkparser.common.normalization import normalize_indexed_data, normalize_indexed_list
 from arkparser.data_models import UploadedCreature, UploadedItem
 from arkparser.game_objects.container import GameObjectContainer
 from arkparser.game_objects.game_object import GameObject
@@ -67,7 +68,7 @@ class CloudInventory(ArkFile):
         ASA v6 format (solo-cluster / cross-ARK transfer files):
         - Int32 version (6)
         - Int32 object_count
-        - Object headers (ASA format with GUIDs — no extra header fields)
+        - Object headers (ASA format with GUIDs, no extra header fields)
         - Properties
         """
         # Read version
@@ -178,11 +179,11 @@ class CloudInventory(ArkFile):
         Returns:
             List of UploadedCreature objects with typed fields.
         """
-        my_ark_data = self.get_property_value("MyArkData")
+        my_ark_data = normalize_indexed_data(self.get_property_value("MyArkData"))
         if not my_ark_data:
             return []
 
-        dino_data_list = my_ark_data.get("ArkTamedDinosData", [])
+        dino_data_list = normalize_indexed_list(my_ark_data.get("ArkTamedDinosData"))
         return [UploadedCreature.from_ark_data(d) for d in dino_data_list]
 
     @property
@@ -193,11 +194,11 @@ class CloudInventory(ArkFile):
         Returns:
             List of UploadedItem objects with typed fields.
         """
-        my_ark_data = self.get_property_value("MyArkData")
+        my_ark_data = normalize_indexed_data(self.get_property_value("MyArkData"))
         if not my_ark_data:
             return []
 
-        item_data_list = my_ark_data.get("ArkItems", [])
+        item_data_list = normalize_indexed_list(my_ark_data.get("ArkItems"))
         return [UploadedItem.from_ark_data(d) for d in item_data_list]
 
     # =========================================================================

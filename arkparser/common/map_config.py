@@ -10,8 +10,12 @@ Where x, y are Unreal Engine world coordinates.
 
 from __future__ import annotations
 
+import logging
 import typing as t
 from dataclasses import dataclass
+from pathlib import Path
+
+log = logging.getLogger("arkparser.map_config")
 
 
 @dataclass
@@ -126,17 +130,32 @@ _MAP_BY_FILENAME: dict[str, MapConfig] = {cfg.filename.lower(): cfg for cfg in _
 DEFAULT_MAP_CONFIG = MapConfig("Unknown", "unknown.ark", 50.0, 8000.0, 50.0, 8000.0)
 
 
-def get_map_config(filename: str) -> MapConfig:
+def get_map_config(filename: str | Path) -> MapConfig:
     """
     Get map configuration by save filename.
 
     Args:
-        filename: The save file name (e.g., "ragnarok.ark").
+        filename: The save file name (e.g., "ragnarok.ark") OR a full
+            ``Path``/path string; the path-tail will be used.
 
     Returns:
-        MapConfig for the map, or DEFAULT_MAP_CONFIG if not found.
+        MapConfig for the map, or DEFAULT_MAP_CONFIG if not found. When the
+        default is returned (i.e. nothing matched), logs a WARNING so silent
+        lat/lon miscalculations don't go unnoticed.
     """
-    return _MAP_BY_FILENAME.get(filename.lower(), DEFAULT_MAP_CONFIG)
+    # Accept a Path or a full-path string so callers can't accidentally pass
+    # the whole path and silently get the default config back (that was a
+    # real bug for non-TheIsland maps; see arkviewer issue notes).
+    name = Path(filename).name if filename else ""
+    cfg = _MAP_BY_FILENAME.get(name.lower())
+    if cfg is None:
+        log.warning(
+            "No MapConfig matched %r; falling back to DEFAULT (50.0/8000.0). "
+            "Lat/lon values will be wrong unless this is The Island.",
+            filename,
+        )
+        return DEFAULT_MAP_CONFIG
+    return cfg
 
 
 def get_map_config_by_name(name: str) -> MapConfig:

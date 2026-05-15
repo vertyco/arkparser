@@ -20,12 +20,36 @@ import json
 import typing as t
 from pathlib import Path
 
-from arkparser.common.map_config import MapConfig, get_map_config
+from arkparser.common.map_config import MapConfig
+from arkparser.files import Profile, Tribe
 from arkparser.models.creature import TamedCreature, WildCreature
 from arkparser.models.player import Player
 from arkparser.models.stats import Location
 from arkparser.models.structure import Structure
 from arkparser.models.tribe import Tribe as TribeModel
+
+ExportNaming = t.Literal["native", "asv"]
+
+_EXPORT_NAME_MAPS: dict[ExportNaming, dict[str, str]] = {
+    "native": {
+        "tamed": "tamed",
+        "wild": "wild",
+        "players": "players",
+        "tribes": "tribes",
+        "structures": "structures",
+        "tribe_logs": "tribe_logs",
+        "map_structures": "map_structures",
+    },
+    "asv": {
+        "tamed": "ASV_Tamed",
+        "wild": "ASV_Wild",
+        "players": "ASV_Players",
+        "tribes": "ASV_Tribes",
+        "structures": "ASV_Structures",
+        "tribe_logs": "ASV_TribeLogs",
+        "map_structures": "ASV_MapStructures",
+    },
+}
 
 
 def _apply_map(loc: Location | None, map_config: MapConfig | None) -> Location | None:
@@ -33,6 +57,19 @@ def _apply_map(loc: Location | None, map_config: MapConfig | None) -> Location |
     if loc and map_config:
         return loc.with_map(map_config)
     return loc
+
+
+def _get_export_name_map(naming: ExportNaming) -> dict[str, str]:
+    """Return the aggregate export names for the requested naming mode."""
+    # Purpose: Resolve the public aggregate export names for a supported naming mode.
+    # Preconditions: ``naming`` must be one of the supported literal values.
+    # Postconditions: Returns the canonical name mapping for the requested mode.
+    # Side effects: Reads the module-level export name registry.
+    # Failure modes: Raises ValueError when ``naming`` is unsupported.
+    name_map = _EXPORT_NAME_MAPS.get(naming)
+    if name_map is None:
+        raise ValueError(f"Unsupported export naming mode: {naming!r}")
+    return name_map
 
 
 # -------------------------------------------------------------------------
@@ -48,7 +85,7 @@ def export_tamed(
     Export tamed creatures in ASV_Tamed format.
 
     Args:
-        save: A parsed savegame (WorldSave — auto-detects ASE/ASA).
+        save: A parsed savegame (WorldSave, which auto-detects ASE/ASA).
         map_config: Optional map config for GPS coordinates.
 
     Returns:
@@ -56,7 +93,7 @@ def export_tamed(
     """
     results: list[dict[str, t.Any]] = []
 
-    tamed_objs = save.tamed_objects if hasattr(save, "tamed_objects") else []
+    tamed_objs = _get_worldsave_objects(save, "get_tamed_creatures", "tamed_objects")
     objects = save.objects if hasattr(save, "objects") else {}
     obj_lookup = _build_lookup(objects)
 
@@ -101,7 +138,7 @@ def export_wild(
     """
     results: list[dict[str, t.Any]] = []
 
-    wild_objs = save.wild_objects if hasattr(save, "wild_objects") else []
+    wild_objs = _get_worldsave_objects(save, "get_wild_creatures", "wild_objects")
     objects = save.objects if hasattr(save, "objects") else {}
     obj_lookup = _build_lookup(objects)
 
@@ -143,9 +180,13 @@ def export_players(
     """
     results: list[dict[str, t.Any]] = []
 
-    profiles = save.profiles if hasattr(save, "profiles") else []
+    profiles = _get_collection(save, "profiles", Profile)
 
     for profile in profiles:
+        if isinstance(profile, Profile):
+            results.append(_export_profile_parser(profile))
+            continue
+
         profile_obj = None
         status_obj = None
 
@@ -190,9 +231,13 @@ def export_tribes(
     """
     results: list[dict[str, t.Any]] = []
 
-    tribes = save.tribes if hasattr(save, "tribes") else []
+    tribes = _get_collection(save, "tribes", Tribe)
 
     for tribe_parser in tribes:
+        if isinstance(tribe_parser, Tribe):
+            results.append(_export_tribe_parser(tribe_parser))
+            continue
+
         tribe_obj = None
         if hasattr(tribe_parser, "tribe"):
             tribe_obj = tribe_parser.tribe
@@ -230,7 +275,7 @@ def export_structures(
     """
     results: list[dict[str, t.Any]] = []
 
-    struct_objs = save.structure_objects if hasattr(save, "structure_objects") else []
+    struct_objs = _get_worldsave_objects(save, "get_structures", "structure_objects")
 
     for obj in struct_objs:
         structure = Structure.from_game_object(obj)
@@ -267,9 +312,19 @@ def export_tribe_logs(
     """
     results: list[dict[str, t.Any]] = []
 
-    tribes = save.tribes if hasattr(save, "tribes") else []
+    tribes = _get_collection(save, "tribes", Tribe)
 
     for tribe_parser in tribes:
+        if isinstance(tribe_parser, Tribe):
+            results.append(
+                {
+                    "tribeid": tribe_parser.tribe_id or 0,
+                    "tribe": tribe_parser.name or "",
+                    "logs": list(tribe_parser.log_entries),
+                }
+            )
+            continue
+
         tribe_obj = None
         if hasattr(tribe_parser, "tribe"):
             tribe_obj = tribe_parser.tribe
@@ -292,7 +347,7 @@ def export_tribe_logs(
 
 
 # -------------------------------------------------------------------------
-# Map Structures (ASV_MapStructures) — structures with GPS coords
+# Map Structures (ASV_MapStructures): structures with GPS coords
 # -------------------------------------------------------------------------
 
 
@@ -316,33 +371,40 @@ def export_map_structures(
 
 
 # -------------------------------------------------------------------------
-# Full Export — all 7 formats at once
+# Full Export: all 7 formats at once
 # -------------------------------------------------------------------------
 
 
 def export_all(
     save: t.Any,
     map_config: MapConfig | None = None,
+    naming: ExportNaming = "native",
 ) -> dict[str, list[dict[str, t.Any]]]:
     """
-    Export all 7 ASV formats at once.
+    Export all 7 formats at once.
 
     Args:
         save: A parsed savegame.
         map_config: Optional map config for GPS coordinates.
+        naming: Aggregate naming mode for returned keys.
 
     Returns:
-        Dictionary with keys ASV_Tamed, ASV_Wild, ASV_Players,
-        ASV_Tribes, ASV_Structures, ASV_TribeLogs, ASV_MapStructures.
+        Dictionary keyed by the requested aggregate naming mode.
     """
+    # Purpose: Export every supported data slice using one consistent aggregate naming mode.
+    # Preconditions: ``save`` exposes the parser collections consumed by the export helpers.
+    # Postconditions: Returns a dictionary containing all seven export payloads.
+    # Side effects: Reads parsed save data and any nested collections referenced by the helpers.
+    # Failure modes: Propagates export helper errors and raises ValueError for unsupported naming.
+    name_map = _get_export_name_map(naming)
     return {
-        "ASV_Tamed": export_tamed(save, map_config),
-        "ASV_Wild": export_wild(save, map_config),
-        "ASV_Players": export_players(save, map_config),
-        "ASV_Tribes": export_tribes(save),
-        "ASV_Structures": export_structures(save, map_config),
-        "ASV_TribeLogs": export_tribe_logs(save),
-        "ASV_MapStructures": export_map_structures(save, map_config),
+        name_map["tamed"]: export_tamed(save, map_config),
+        name_map["wild"]: export_wild(save, map_config),
+        name_map["players"]: export_players(save, map_config),
+        name_map["tribes"]: export_tribes(save),
+        name_map["structures"]: export_structures(save, map_config),
+        name_map["tribe_logs"]: export_tribe_logs(save),
+        name_map["map_structures"]: export_map_structures(save, map_config),
     }
 
 
@@ -350,22 +412,29 @@ def export_to_files(
     save: t.Any,
     output_dir: str | Path,
     map_config: MapConfig | None = None,
+    naming: ExportNaming = "native",
 ) -> list[Path]:
     """
-    Export all 7 ASV formats to JSON files.
+    Export all 7 formats to JSON files.
 
     Args:
         save: A parsed savegame.
         output_dir: Directory to write JSON files to.
         map_config: Optional map config for GPS coordinates.
+        naming: Aggregate naming mode for file names.
 
     Returns:
         List of paths to the created files.
     """
+    # Purpose: Serialize every supported export payload to JSON files in one directory.
+    # Preconditions: ``output_dir`` is writable and ``save`` supports the export helpers.
+    # Postconditions: Creates one JSON file per aggregate export payload and returns their paths.
+    # Side effects: Creates directories and writes JSON files to disk.
+    # Failure modes: Propagates filesystem errors, export helper errors, and ValueError for unsupported naming.
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    all_data = export_all(save, map_config)
+    all_data = export_all(save, map_config, naming=naming)
     created: list[Path] = []
 
     for name, data in all_data.items():
@@ -383,15 +452,115 @@ def export_to_files(
 
 def _build_lookup(objects: t.Any) -> dict[t.Any, t.Any]:
     """Build an object lookup dict from various container formats."""
-    if isinstance(objects, dict):
-        return objects
-    if isinstance(objects, list):
-        result: dict[t.Any, t.Any] = {}
-        for obj in objects:
-            key = getattr(obj, "guid", None) or id(obj)
-            result[key] = obj
-        return result
-    return {}
+    values = list(objects.values()) if isinstance(objects, dict) else list(objects) if isinstance(objects, list) else []
+    result: dict[t.Any, t.Any] = {}
+
+    for obj in values:
+        obj_id = getattr(obj, "id", None)
+        guid = getattr(obj, "guid", None)
+        names = getattr(obj, "names", None) or []
+
+        if obj_id is not None:
+            result[obj_id] = obj
+        if guid:
+            result[guid] = obj
+        for name in names:
+            result[name] = obj
+
+    return result
+
+
+def _get_collection(source: t.Any, attr_name: str, parser_type: type[t.Any]) -> list[t.Any]:
+    """Normalize a parser collection or single parser instance to a list."""
+    if isinstance(source, parser_type):
+        return [source]
+
+    values = getattr(source, attr_name, None)
+    if isinstance(values, (list, tuple)):
+        return list(values)
+    if values is None:
+        return []
+    return [values]
+
+
+def _get_worldsave_objects(save: t.Any, getter_name: str, legacy_attr: str) -> list[t.Any]:
+    """Get world-save object collections from modern or legacy APIs."""
+    getter = getattr(save, getter_name, None)
+    if callable(getter):
+        return list(getter())
+
+    values = getattr(save, legacy_attr, None)
+    if isinstance(values, list):
+        return values
+    return []
+
+
+def _resolve_reference(ref: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
+    """Resolve an object reference stored as an ID, GUID, or name."""
+    if ref is None:
+        return None
+    return lookup.get(ref)
+
+
+def _export_profile_parser(profile: Profile) -> dict[str, t.Any]:
+    """Export a parsed `Profile` using its nested parser API."""
+    stat_points = [int(profile.get_stat(i)["added"]) for i in range(12)]
+    stats = {
+        "health": stat_points[0],
+        "stamina": stat_points[1],
+        "torpidity": stat_points[2],
+        "oxygen": stat_points[3],
+        "food": stat_points[4],
+        "water": stat_points[5],
+        "temperature": stat_points[6],
+        "weight": stat_points[7],
+        "melee": stat_points[8],
+        "speed": stat_points[9],
+        "fortitude": stat_points[10],
+        "crafting": stat_points[11],
+    }
+    steam_id = profile.unique_id or ""
+
+    result: dict[str, t.Any] = {
+        "playerid": profile.player_id or 0,
+        "steam": "",
+        "name": profile.player_name or "",
+        "tribeid": profile.tribe_id or 0,
+        "tribe": profile.tribe_name or "",
+        "sex": "",
+        "lvl": profile.level,
+        "hp": stats["health"],
+        "stam": stats["stamina"],
+        "melee": stats["melee"],
+        "weight": stats["weight"],
+        "speed": stats["speed"],
+        "food": stats["food"],
+        "water": stats["water"],
+        "oxy": stats["oxygen"],
+        "craft": stats["crafting"],
+        "fort": stats["fortitude"],
+        "stats": stats,
+        "engram_points": profile.total_engram_points,
+        "experience": profile.experience,
+    }
+    if steam_id:
+        result["steamid"] = steam_id
+        result["dataFile"] = f"{steam_id}.arkprofile"
+    return result
+
+
+def _export_tribe_parser(tribe: Tribe) -> dict[str, t.Any]:
+    """Export a parsed `Tribe` using its nested parser API."""
+    return {
+        "tribeid": tribe.tribe_id or 0,
+        "tribe": tribe.name or "",
+        "players": tribe.member_count,
+        "members": tribe.get_members(),
+        "owner_id": tribe.owner_player_id or 0,
+        "owner_name": "",
+        "alliance_ids": tribe.alliance_ids,
+        "logs": tribe.log_entries,
+    }
 
 
 def _find_status_component(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
@@ -411,21 +580,7 @@ def _find_status_component(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
     if hasattr(obj, "get_property_value"):
         ref = obj.get_property_value("MyCharacterStatusComponent", default=None)
 
-    if ref is None:
-        return None
-
-    # Resolve reference
-    guid = None
-    if hasattr(ref, "guid") and ref.guid:
-        guid = ref.guid
-    elif hasattr(ref, "object_id") and ref.object_id >= 0:
-        if isinstance(lookup, list):
-            return lookup[ref.object_id] if ref.object_id < len(lookup) else None
-
-    if guid and guid in lookup:
-        return lookup[guid]
-
-    return None
+    return _resolve_reference(ref, lookup)
 
 
 def _get_inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t.Any]]:
@@ -436,17 +591,7 @@ def _get_inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[st
     if hasattr(obj, "get_property_value"):
         inv_ref = obj.get_property_value("MyInventoryComponent", default=None)
 
-    if inv_ref is None:
-        return items
-
-    # Resolve inventory object
-    inv_obj = None
-    guid = None
-    if hasattr(inv_ref, "guid") and inv_ref.guid:
-        guid = inv_ref.guid
-
-    if guid and guid in lookup:
-        inv_obj = lookup[guid]
+    inv_obj = _resolve_reference(inv_ref, lookup)
 
     if inv_obj is None:
         return items
@@ -460,26 +605,24 @@ def _get_inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[st
         return items
 
     for ref in item_refs:
-        item_guid = None
-        if hasattr(ref, "guid") and ref.guid:
-            item_guid = ref.guid
+        item_obj = _resolve_reference(ref, lookup)
+        if item_obj is None:
+            continue
 
-        if item_guid and item_guid in lookup:
-            item_obj = lookup[item_guid]
-            item_class = str(getattr(item_obj, "class_name", ""))
-            qty = 1
-            is_bp = False
-            if hasattr(item_obj, "get_property_value"):
-                q = item_obj.get_property_value("ItemQuantity", default=1)
-                qty = int(q) if q else 1
-                is_bp = item_obj.get_property_value("bIsBlueprint", default=False)
+        item_class = str(getattr(item_obj, "class_name", ""))
+        qty = 1
+        is_bp = False
+        if hasattr(item_obj, "get_property_value"):
+            q = item_obj.get_property_value("ItemQuantity", default=1)
+            qty = int(q) if q else 1
+            is_bp = item_obj.get_property_value("bIsBlueprint", default=False)
 
-            items.append(
-                {
-                    "itemId": item_class,
-                    "qty": qty,
-                    "blueprint": bool(is_bp),
-                }
-            )
+        items.append(
+            {
+                "itemId": item_class,
+                "qty": qty,
+                "blueprint": bool(is_bp),
+            }
+        )
 
     return items

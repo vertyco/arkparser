@@ -18,6 +18,10 @@ from .vectors import IntPoint, IntVector, Quat, Rotator, Vector, Vector2D
 
 # Type alias for struct reader functions
 StructReader = t.Callable[[BinaryReader, bool], Struct]
+PropertyReader = t.Callable[..., t.Any]
+
+
+PROPERTY_READER: PropertyReader | None = None
 
 
 # Registry mapping struct type names to their classes
@@ -45,6 +49,12 @@ ARRAY_NAME_TO_STRUCT_TYPE: dict[str, str] = {
     "CustomColors": "Color",
     "CustomColours_60_7D3267C846B277953C0C41AEBD54FBCB": "LinearColor",
 }
+
+
+def set_property_reader(property_reader: PropertyReader) -> None:
+    """Register the property reader used for property-list structs."""
+    global PROPERTY_READER
+    PROPERTY_READER = property_reader
 
 
 def read_struct(
@@ -95,6 +105,7 @@ def read_struct(
             struct_type=struct_type,
             name_table=name_table,
             worldsave_format=worldsave_format,
+            property_reader=PROPERTY_READER,
         )
 
 
@@ -127,7 +138,13 @@ def read_struct_for_array(
         return read_struct(reader, struct_type, is_asa, name_table=name_table)
     else:
         # Unknown array - read as property list
-        return StructPropertyList.read(reader, is_asa, struct_type="PropertyList", name_table=name_table)
+        return StructPropertyList.read(
+            reader,
+            is_asa,
+            struct_type="PropertyList",
+            name_table=name_table,
+            property_reader=PROPERTY_READER,
+        )
 
 
 def is_native_struct(struct_type: str) -> bool:

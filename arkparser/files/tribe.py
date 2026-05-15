@@ -14,6 +14,7 @@ from __future__ import annotations
 import typing as t
 from dataclasses import dataclass
 
+from ..common.normalization import normalize_indexed_data, normalize_indexed_list
 from .base import ArkFile
 
 
@@ -40,7 +41,8 @@ class Tribe(ArkFile):
         tribe_data = self.get_property_value("TribeData")
         if tribe_data is None:
             return {}
-        return tribe_data if isinstance(tribe_data, dict) else {}
+        normalized = normalize_indexed_data(tribe_data)
+        return normalized if isinstance(normalized, dict) else {}
 
     # Convenience properties for tribe data
 
@@ -50,8 +52,11 @@ class Tribe(ArkFile):
 
         Note: ASE uses 'TribeId' while ASA uses 'TribeID' (different capitalization).
         """
-        # ASA uses TribeID, ASE uses TribeId
-        return self._tribe_data.get("TribeID") or self._tribe_data.get("TribeId")
+        if "TribeID" in self._tribe_data:
+            return self._tribe_data["TribeID"]
+        if "TribeId" in self._tribe_data:
+            return self._tribe_data["TribeId"]
+        return None
 
     @property
     def name(self) -> str | None:
@@ -64,23 +69,26 @@ class Tribe(ArkFile):
 
         Note: ASE uses 'OwnerPlayerDataID' while ASA uses 'OwnerPlayerDataId' (different capitalization).
         """
-        # ASE uses OwnerPlayerDataID, ASA uses OwnerPlayerDataId
-        return self._tribe_data.get("OwnerPlayerDataID") or self._tribe_data.get("OwnerPlayerDataId")
+        if "OwnerPlayerDataID" in self._tribe_data:
+            return self._tribe_data["OwnerPlayerDataID"]
+        if "OwnerPlayerDataId" in self._tribe_data:
+            return self._tribe_data["OwnerPlayerDataId"]
+        return None
 
     @property
     def member_ids(self) -> list[int]:
         """Get list of member player IDs."""
-        return self._tribe_data.get("MembersPlayerDataID", [])
+        return [int(member_id) for member_id in normalize_indexed_list(self._tribe_data.get("MembersPlayerDataID"))]
 
     @property
     def member_names(self) -> list[str]:
         """Get list of member player names."""
-        return self._tribe_data.get("MembersPlayerName", [])
+        return [str(member_name) for member_name in normalize_indexed_list(self._tribe_data.get("MembersPlayerName"))]
 
     @property
     def member_ranks(self) -> list[int]:
         """Get list of member rank indices."""
-        return self._tribe_data.get("MembersRankGroups", [])
+        return [int(rank) for rank in normalize_indexed_list(self._tribe_data.get("MembersRankGroups"))]
 
     @property
     def member_count(self) -> int:
@@ -90,7 +98,7 @@ class Tribe(ArkFile):
     @property
     def log_entries(self) -> list[str]:
         """Get tribe log entries as strings."""
-        return self._tribe_data.get("TribeLog", [])
+        return [str(entry) for entry in normalize_indexed_list(self._tribe_data.get("TribeLog"))]
 
     @property
     def rank_groups(self) -> list[dict[str, t.Any]]:
@@ -101,14 +109,14 @@ class Tribe(ArkFile):
         - Name
         - Permission flags
         """
-        rank_names = self._tribe_data.get("TribeRankGroupNames", [])
+        rank_names = normalize_indexed_list(self._tribe_data.get("TribeRankGroupNames"))
         # Could also get permissions from TribeRankGroupPermissions
         return [{"name": name} for name in rank_names]
 
     @property
     def alliance_ids(self) -> list[int]:
         """Get IDs of allied tribes."""
-        return self._tribe_data.get("TribeAlliances", [])
+        return [int(alliance_id) for alliance_id in normalize_indexed_list(self._tribe_data.get("TribeAlliances"))]
 
     @property
     def government_type(self) -> int:

@@ -7,9 +7,12 @@ Game objects represent creatures, items, structures, players, and other entities
 
 from __future__ import annotations
 
+import re
 import typing as t
+from collections import defaultdict
 from dataclasses import dataclass, field
 
+from ..properties.registry import read_properties, read_property
 from .location import LocationData
 
 if t.TYPE_CHECKING:
@@ -115,38 +118,125 @@ class GameObject:
         """Check if this object has a property with the given name."""
         return any(p.name == name for p in self.properties)
 
+    # Normalized component key names: maps UE4 dynamic blueprint names
+    # (e.g. DinoCharacterStatus_BP_Rex_C1) to stable consumer-friendly keys.
+    _COMPONENT_PATTERNS: t.ClassVar[tuple[tuple[str, str], ...]] = (
+        ("CharacterStatus", "status"),
+        ("Inventory", "inventory"),
+        ("Painting", "painting"),
+    )
+
+    @staticmethod
+    def _normalize_component_name(name: str) -> str:
+        """Map a dynamic UE4 component name to a stable key.
+
+        Falls back to the original name for unrecognized components.
+        """
+        for pattern, key in GameObject._COMPONENT_PATTERNS:
+            if pattern in name:
+                return key
+        return name
+
+    _UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _is_object_ref(prop: Property) -> bool:
+        """True if this property is an internal object-index reference.
+
+        ``ObjectProperty`` can hold either:
+        - An integer object-index (ASE internal plumbing) → filtered
+        - A GUID string (ASA internal plumbing) → filtered
+        - A blueprint/name path string (meaningful to consumers) → kept
+
+        ``ArrayProperty`` whose ``array_type`` is ``ObjectProperty`` is also
+        treated as internal when every element is an ``("id", <int>)`` tuple.
+        """
+        if prop.type_name == "ObjectProperty":
+            val = prop.value
+            if isinstance(val, int):
+                return True
+            if isinstance(val, str) and GameObject._UUID_RE.match(val):
+                return True
+            return False
+        if prop.type_name == "ArrayProperty" and getattr(prop, "array_type", "") == "ObjectProperty":
+            return all(isinstance(v, (tuple, list)) and len(v) == 2 and v[0] == "id" for v in prop.value)
+        return False
+
+    @staticmethod
+    def _clean_value(val: t.Any) -> t.Any:
+        """Strip internal metadata (``_struct_type``) from serialized values."""
+        if isinstance(val, dict):
+            return {k: GameObject._clean_value(v) for k, v in val.items() if k != "_struct_type"}
+        if isinstance(val, list):
+            return [GameObject._clean_value(v) for v in val]
+        return val
+
+    def _serialize_properties(self) -> dict[str, t.Any]:
+        """Serialize this object's properties to a flat dict.
+
+        Skips ``ObjectProperty`` and ``ArrayProperty[ObjectProperty]`` values
+        because they are internal save-file references (indices into the
+        object table).  The data they point to is already surfaced under
+        ``components`` where applicable.
+
+        Also strips internal metadata keys like ``_struct_type`` from nested
+        struct dicts.
+
+        Single non-indexed properties become bare values.
+        Multiple or indexed properties become ``{index: value}`` dicts.
+        ByteProperty always uses dict form because it is commonly used for
+        indexed stat arrays where only a single entry at index 0 may be
+        populated; collapsing it would change the data shape.
+        """
+        grouped: dict[str, list[Property]] = defaultdict(list)
+        for prop in self.properties:
+            if not self._is_object_ref(prop):
+                grouped[prop.name].append(prop)
+
+        clean = self._clean_value
+
+        def _should_collapse(props: list[Property]) -> bool:
+            """True if a property group should collapse to a bare value."""
+            if len(props) != 1:
+                return False
+            # ByteProperty is used for indexed stat arrays that may have only
+            # one populated entry; always keep dict form for shape consistency.
+            if props[0].type_name == "ByteProperty":
+                return False
+            return True
+
+        return {
+            name: clean(prop_list[0].value if _should_collapse(prop_list) else {p.index: p.value for p in prop_list})
+            for name, prop_list in grouped.items()
+        }
+
     def to_dict(self) -> dict[str, t.Any]:
         """Convert to dictionary for serialization."""
         result: dict[str, t.Any] = {
-            "id": self.id,
             "class_name": self.class_name,
         }
 
-        if self.guid:
-            result["guid"] = self.guid
-        if self.is_item:
-            result["is_item"] = True
         if self.names:
             result["names"] = self.names
-        if self.from_data_file:
-            result["from_data_file"] = True
-            result["data_file_index"] = self.data_file_index
         if self.location:
             result["location"] = self.location.to_dict()
 
-        # Convert properties to dict
-        props: dict[str, t.Any] = {}
-        for prop in self.properties:
-            if prop.name in props:
-                existing = props[prop.name]
-                if isinstance(existing, list):
-                    existing.append(prop.value)
-                else:
-                    props[prop.name] = [existing, prop.value]
-            else:
-                props[prop.name] = prop.value
+        props = self._serialize_properties()
         if props:
             result["properties"] = props
+
+        # Flatten components to just their property dicts: the component's
+        # own id / class_name / names are internal plumbing consumers don't need.
+        # Dynamic UE4 component names (e.g. DinoCharacterStatus_BP_Rex_C1)
+        # are normalized to fixed keys so consumers don't need pattern matching.
+        if self.components:
+            result["components"] = {
+                self._normalize_component_name(name): comp._serialize_properties()
+                for name, comp in self.components.items()
+            }
 
         return result
 
@@ -221,16 +311,37 @@ class GameObject:
             next_object: Next object (to determine property block end).
             name_table: Optional name table for world saves (version 6+).
         """
-        from ..properties.registry import read_properties
-
         # Calculate absolute offset
         offset = properties_block_offset + self.properties_offset
 
         # Seek to properties
         reader.position = offset
 
-        # Read properties
-        self.properties = read_properties(reader, is_asa, name_table=name_table)
+        # Read properties. Some ASE objects contain trailing opaque extra data
+        # after a run of normal properties; preserve successfully parsed
+        # properties and store the remainder as `extra_data`.
+        if is_asa:
+            self.properties = read_properties(reader, is_asa, name_table=name_table)
+        else:
+            properties: list[Property] = []
+            try:
+                while True:
+                    prop = read_property(reader, is_asa, name_table=name_table)
+                    if prop is None:
+                        break
+                    properties.append(prop)
+            except Exception:
+                self.properties = properties
+                if next_object is None:
+                    raise
+
+                next_offset = properties_block_offset + next_object.properties_offset
+                remaining = next_offset - reader.position
+                if remaining > 0:
+                    self.extra_data = reader.read_bytes(remaining)
+                return
+
+            self.properties = properties
 
         # Any remaining data before next object is extra data
         if next_object is not None:

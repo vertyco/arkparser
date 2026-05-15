@@ -14,6 +14,7 @@ from __future__ import annotations
 import typing as t
 from dataclasses import dataclass
 
+from ..common.normalization import normalize_indexed_data, normalize_indexed_list
 from .base import ArkFile
 
 
@@ -53,7 +54,8 @@ class Profile(ArkFile):
         player_data = self.get_property_value("MyData")
         if player_data is None:
             return {}
-        return player_data if isinstance(player_data, dict) else {}
+        normalized = normalize_indexed_data(player_data)
+        return normalized if isinstance(normalized, dict) else {}
 
     @property
     def _persistent_stats(self) -> dict[str, t.Any]:
@@ -61,7 +63,8 @@ class Profile(ArkFile):
         stats = self._player_data.get("MyPersistentCharacterStats")
         if stats is None:
             return {}
-        return stats if isinstance(stats, dict) else {}
+        normalized = normalize_indexed_data(stats)
+        return normalized if isinstance(normalized, dict) else {}
 
     # Convenience properties for common player data
 
@@ -78,9 +81,11 @@ class Profile(ArkFile):
     @property
     def unique_id(self) -> str | None:
         """Get the player's network unique ID (Steam ID, Xbox ID, etc.)."""
-        unique_id = self._player_data.get("UniqueID")
+        unique_id = normalize_indexed_data(self._player_data.get("UniqueID"))
         if unique_id and isinstance(unique_id, dict):
             return str(unique_id.get("net_id", ""))
+        if unique_id:
+            return str(unique_id)
         return None
 
     @property
@@ -90,8 +95,11 @@ class Profile(ArkFile):
 
         Note: ASE uses "TribeId" (lowercase d), ASA uses "TribeID" (uppercase D).
         """
-        # ASE uses "TribeId", ASA uses "TribeID"
-        return self._player_data.get("TribeId") or self._player_data.get("TribeID")
+        if "TribeId" in self._player_data:
+            return self._player_data["TribeId"]
+        if "TribeID" in self._player_data:
+            return self._player_data["TribeID"]
+        return None
 
     @property
     def tribe_name(self) -> str | None:
@@ -129,8 +137,8 @@ class Profile(ArkFile):
         """Get list of learned engram blueprint paths."""
         engrams = self._persistent_stats.get("EngramBlueprints")
         if not engrams:
-            engrams = self._persistent_stats.get("PlayerState_EngramBlueprints", [])
-        return [str(e) for e in engrams] if engrams else []
+            engrams = self._persistent_stats.get("PlayerState_EngramBlueprints")
+        return [str(engram) for engram in normalize_indexed_list(engrams)]
 
     def get_stat(self, stat_index: int) -> dict[str, t.Any]:
         """

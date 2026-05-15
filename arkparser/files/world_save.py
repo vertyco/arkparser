@@ -94,7 +94,7 @@ class WorldSave:
     """
     Unified parser for ``.ark`` world save files (ASE binary **and** ASA SQLite).
 
-    Call :meth:`load` with any ``.ark`` file — the format is auto‑detected:
+    Call :meth:`load` with any ``.ark`` file; the format is auto-detected:
 
     * **ASE** (versions 5‑12): traditional binary format.
     * **ASA** (SQLite): tables ``game`` (objects) and ``custom``
@@ -109,8 +109,8 @@ class WorldSave:
         data_files_object_map: Maps data-file indices to object names (ASE only).
         name_table: Deduplicated name strings used during parsing.
         objects: All parsed game objects (always a flat list).
-        container: Relationship-aware object container (ASE only — ``None`` for ASA).
-        actor_locations: GUID → location mapping (ASA only — empty dict for ASE).
+        container: Relationship-aware object container (ASE only; ``None`` for ASA).
+        actor_locations: GUID → location mapping (ASA only; empty dict for ASE).
         is_asa: Whether this save was loaded from an ASA SQLite file.
 
     Example::
@@ -135,7 +135,7 @@ class WorldSave:
     # ASE-specific
     embedded_data: list[EmbeddedData] = field(default_factory=list)
     data_files_object_map: dict[int, list[list[str]]] = field(default_factory=dict)
-    container: GameObjectContainer | None = None
+    container: GameObjectContainer = field(default_factory=GameObjectContainer)
 
     # ASA-specific
     actor_locations: dict[str, LocationData] = field(default_factory=dict)
@@ -143,7 +143,6 @@ class WorldSave:
     # ------------------------------------------------------------------
     # Internal state
     # ------------------------------------------------------------------
-    _objects_by_guid: dict[str, GameObject] = field(default_factory=dict, repr=False)
     _parse_errors: list[str] = field(default_factory=list, repr=False)
 
     # ASE header offsets
@@ -207,8 +206,8 @@ class WorldSave:
     # ------------------------------------------------------------------
 
     def get_object_by_guid(self, guid: str) -> GameObject | None:
-        """Get an object by its GUID string (efficient for ASA saves)."""
-        return self._objects_by_guid.get(guid)
+        """Get an object by its GUID string."""
+        return self.container.get_by_guid(guid)
 
     def get_actor_location(self, guid: str) -> LocationData | None:
         """Get the location of an actor by GUID (ASA saves only)."""
@@ -216,151 +215,73 @@ class WorldSave:
 
     def get_objects_by_class(self, class_name: str) -> list[GameObject]:
         """Return all objects whose ``class_name`` contains *class_name*."""
-        return [obj for obj in self.objects if class_name in obj.class_name]
+        return self.container.find_by_class_pattern(class_name)
 
-    # Class-name patterns that are never structures even though they may
-    # carry ``TargetingTeam``.  Checked via ``any(pat in cn for pat ...)``.
-    _NON_STRUCTURE_PATTERNS: t.ClassVar[tuple[str, ...]] = (
-        "_Character_BP",  # Creatures / tamed dinos
-        "DinoCharacter",  # Creature variants
-        "PlayerPawn",  # Player avatars on the map
-        "Buff_",  # Active buffs
-        "PrimalBuff",  # Persistent buff data
-        "Weap",  # Held weapons
-        "StatusComponent",  # Character/dino status components
-        "Inventory",  # Inventory components
-        "DroppedItem",  # Dropped items
-        "DeathItemCache",  # Death caches
-        "NPCZone",  # NPC spawn zones
-        "DinoDropInventory",  # Dino death drops
+    _TAMED_MARKER_PROPERTIES: t.ClassVar[tuple[str, ...]] = (
+        "TamerString",
+        "TamedName",
+        "TamedAtTime",
+        "TribeName",
+        "TamedOnServerName",
+        "UploadedFromServerName",
+        "ImprinterName",
+        "ImprinterPlayerDataID",
     )
+
+    def _is_tamed_creature(self, obj: GameObject) -> bool:
+        """Return ``True`` if a creature carries tame ownership markers."""
+        taming_team = obj.get_property_value("TamingTeamID")
+        if isinstance(taming_team, (int, float)) and taming_team > 0:
+            return True
+
+        targeting_team = obj.get_property_value("TargetingTeam")
+        if isinstance(targeting_team, (int, float)) and targeting_team > 1000:
+            return True
+
+        return any(
+            obj.get_property_value(prop_name) not in (None, "", 0, 0.0, False)
+            for prop_name in self._TAMED_MARKER_PROPERTIES
+        )
 
     def get_creatures(self) -> list[GameObject]:
         """Return all creature objects (tamed **and** wild)."""
-        return [obj for obj in self.objects if "_Character_BP" in obj.class_name or "DinoCharacter" in obj.class_name]
+        return self.container.get_creatures()
 
     def get_tamed_creatures(self) -> list[GameObject]:
-        """Return tamed creatures (have ``TamingTeamID`` property)."""
-        return [obj for obj in self.get_creatures() if obj.get_property_value("TamingTeamID") is not None]
+        """Return tamed creatures."""
+        return [obj for obj in self.get_creatures() if self._is_tamed_creature(obj)]
 
     def get_wild_creatures(self) -> list[GameObject]:
-        """Return wild creatures (no ``TamingTeamID`` property)."""
-        return [obj for obj in self.get_creatures() if obj.get_property_value("TamingTeamID") is None]
+        """Return wild creatures."""
+        return [obj for obj in self.get_creatures() if not self._is_tamed_creature(obj)]
 
     def get_structures(self) -> list[GameObject]:
-        """Return tribe-owned placed structures.
-
-        Uses property-based classification:
-        1. Must have ``TargetingTeam`` (placed by a player/tribe).
-        2. Must not have ``DinoID1`` (that would be a creature).
-        3. Must not match any non-structure class-name pattern (players,
-           buffs, weapons, status components, etc.).
-        """
-        results: list[GameObject] = []
-        for obj in self.objects:
-            cn = obj.class_name
-            if obj.get_property_value("TargetingTeam") is None:
-                continue
-            if obj.get_property_value("DinoID1") is not None:
-                continue
-            if any(pat in cn for pat in self._NON_STRUCTURE_PATTERNS):
-                continue
-            results.append(obj)
-        return results
+        """Return tribe-owned placed structures."""
+        return self.container.get_structures()
 
     def get_player_pawns(self) -> list[GameObject]:
-        """Return player character objects currently on the map.
-
-        These are the in-world player avatars (``PlayerPawnTest_*``). Each
-        carries ``PlayerName``, ``LinkedPlayerDataID``, ``TribeName``,
-        ``TargetingTeam``, a location, and component references for stats
-        and inventory.
-        """
-        return [obj for obj in self.objects if "PlayerPawn" in obj.class_name]
+        """Return player character objects currently on the map."""
+        return self.container.get_player_pawns()
 
     def get_items(self) -> list[GameObject]:
         """Return objects with ``is_item`` set."""
-        return [obj for obj in self.objects if obj.is_item]
-
-    # ---- Map / engine-placed entities --------------------------------
+        return self.container.get_items()
 
     def get_terminals(self) -> list[GameObject]:
-        """Return map-placed terminal objects.
-
-        Covers tribute terminals (obelisks on The Island, Ragnarok, etc.),
-        Extinction city terminals, and any variant using ``TributeTerminal``
-        or ``CityTerminal`` in the class name.  These are engine-placed and
-        have **no** ``TargetingTeam``.
-
-        Inventory components and item sub-objects attached to terminals are
-        excluded — only the top-level structure actors are returned.
-        """
-        return [
-            obj
-            for obj in self.objects
-            if ("TributeTerminal" in obj.class_name or "CityTerminal" in obj.class_name)
-            and not obj.is_item
-            and "Inventory" not in obj.class_name
-            and "PrimalItem" not in obj.class_name
-        ]
+        """Return map-placed terminal objects."""
+        return self.container.get_terminals()
 
     def get_supply_drops(self) -> list[GameObject]:
-        """Return active supply-drop / loot-crate objects on the map.
-
-        Matches ``SupplyCrate``, ``OrbitalSupply``, and ``SupplyDrop``
-        class-name substrings.  Inventory components are excluded.
-        """
-        _SUPPLY_PATTERNS = ("SupplyCrate", "OrbitalSupply", "SupplyDrop")
-        return [
-            obj
-            for obj in self.objects
-            if any(p in obj.class_name for p in _SUPPLY_PATTERNS)
-            and "Inventory" not in obj.class_name
-            and not obj.is_item
-        ]
+        """Return active supply-drop / loot-crate objects on the map."""
+        return self.container.get_supply_drops()
 
     def get_artifact_crates(self) -> list[GameObject]:
-        """Return artifact-crate spawn objects.
-
-        These are the map-placed crates that contain artifacts for boss
-        fights (e.g. ``ArtifactCrate_Desert_Kaiju_EX_C``).
-        Inventory components are excluded.
-        """
-        return [
-            obj
-            for obj in self.objects
-            if "ArtifactCrate" in obj.class_name and "Inventory" not in obj.class_name and not obj.is_item
-        ]
+        """Return artifact-crate spawn objects."""
+        return self.container.get_artifact_crates()
 
     def get_map_resources(self) -> list[GameObject]:
-        """Return engine-placed resource / vein / node objects.
-
-        Covers map-specific harvestable resource objects:
-
-        * Oil veins (The Island, Ragnarok, …)  — ``OilVein``
-        * Water veins (Scorched Earth, …)       — ``WaterVein``
-        * Gas veins (Scorched Earth, …)         — ``GasVein``
-        * Charge nodes (Aberration)             — ``ChargeNode``
-        * Element veins (Extinction)            — ``ElementVein``
-        * Beaver dams                           — ``BeaverDam``
-
-        Inventory components attached to these are excluded.
-        """
-        _RESOURCE_PATTERNS = (
-            "OilVein",
-            "WaterVein",
-            "GasVein",
-            "ChargeNode",
-            "ElementVein",
-            "BeaverDam",
-        )
-        return [
-            obj
-            for obj in self.objects
-            if any(p in obj.class_name for p in _RESOURCE_PATTERNS)
-            and "Inventory" not in obj.class_name
-            and not obj.is_item
-        ]
+        """Return engine-placed resource / vein / node objects."""
+        return self.container.get_map_resources()
 
     # ------------------------------------------------------------------
     # Properties
@@ -572,7 +493,6 @@ class WorldSave:
     def _read_ase_object_properties(self, reader: BinaryReader) -> None:
         """Load properties for every ASE object."""
         name_table = self.name_table if self.version > 5 and isinstance(self.name_table, list) else None
-        failures = 0
 
         for i, obj in enumerate(self.objects):
             next_obj = self.objects[i + 1] if i + 1 < len(self.objects) else None
@@ -584,13 +504,13 @@ class WorldSave:
                     next_object=next_obj,
                     name_table=name_table,
                 )
-            except Exception:
+            except Exception as exc:
                 logger.debug(
                     "Failed to load properties for object %s",
                     obj.class_name,
                     exc_info=True,
                 )
-                failures += 1
+                self._parse_errors.append(f"{obj.class_name or obj.id}: {exc}")
 
     # ==================================================================
     # ASA parsing (SQLite)
@@ -616,6 +536,9 @@ class WorldSave:
             conn.close()
         except sqlite3.Error as e:
             raise ArkParseError(f"SQLite error reading ASA world save: {e}")
+
+        save.container = GameObjectContainer(objects=save.objects)
+        save.container.build_relationships()
 
         return save
 
@@ -696,7 +619,6 @@ class WorldSave:
 
         cursor = conn.execute(query)
         self.objects = []
-        self._objects_by_guid = {}
         obj_id = 0
 
         for key_bytes, value_bytes in cursor:
@@ -706,7 +628,6 @@ class WorldSave:
                 if guid_str in self.actor_locations:
                     obj.location = self.actor_locations[guid_str]
                 self.objects.append(obj)
-                self._objects_by_guid[guid_str] = obj
                 obj_id += 1
             except Exception as e:
                 self._parse_errors.append(f"GUID {guid_str}: {e}")

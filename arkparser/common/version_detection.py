@@ -186,9 +186,9 @@ def get_save_version(source: bytes | str | Path) -> int:
     if data[:16] == b"SQLite format 3\x00":
         return -1  # SQLite doesn't have a simple version
 
-    # Check if it looks like a world save (Int16 version 5-9)
+    # Check if it looks like a world save (Int16 version 5-12)
     int16_version = int.from_bytes(data[0:2], "little", signed=True)
-    if 5 <= int16_version <= 9:
+    if 5 <= int16_version <= 12:
         return int16_version
 
     # Otherwise read as Int32

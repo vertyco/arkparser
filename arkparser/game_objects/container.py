@@ -121,9 +121,18 @@ class GameObjectContainer:
         "DinoDropInventory",
     )
 
+    def _is_creature_object(self, obj: GameObject) -> bool:
+        """Return ``True`` for top-level creature actors only."""
+        class_name = obj.class_name
+        if not class_name or obj.is_item:
+            return False
+
+        is_creature = "_Character_BP" in class_name or "DinoCharacter" in class_name
+        return is_creature and "StatusComponent" not in class_name and "Inventory" not in class_name
+
     def get_creatures(self) -> list[GameObject]:
         """Get all creature objects (tamed and wild)."""
-        return [obj for obj in self.objects if "_Character_BP" in obj.class_name or "DinoCharacter" in obj.class_name]
+        return [obj for obj in self.objects if self._is_creature_object(obj)]
 
     def get_items(self) -> list[GameObject]:
         """Get all item objects."""

@@ -8,6 +8,7 @@ It's used for complex game objects and custom data structures.
 from __future__ import annotations
 
 import typing as t
+from collections import defaultdict
 from dataclasses import dataclass, field
 
 from .base import Struct
@@ -39,18 +40,16 @@ class StructPropertyList(Struct):
 
     def to_dict(self) -> dict[str, t.Any]:
         """Convert properties to a dictionary."""
-        result: dict[str, t.Any] = {}
+        grouped: dict[str, list[Property]] = defaultdict(list)
         for prop in self.properties:
-            if prop.name in result:
-                # Handle duplicate property names (array-like)
-                existing = result[prop.name]
-                if isinstance(existing, list):
-                    existing.append(prop.value)
-                else:
-                    result[prop.name] = [existing, prop.value]
-            else:
-                result[prop.name] = prop.value
-        return result
+            grouped[prop.name].append(prop)
+
+        return {
+            name: prop_list[0].value
+            if len(prop_list) == 1
+            else {prop.index: prop.value for prop in prop_list}
+            for name, prop_list in grouped.items()
+        }
 
     def get_property(self, name: str, index: int = 0) -> Property | None:
         """Get a property by name and optional index."""
@@ -72,11 +71,10 @@ class StructPropertyList(Struct):
         struct_type: str = "PropertyList",
         name_table: list[str] | None = None,
         worldsave_format: bool = False,
+        property_reader: t.Callable[..., t.Any] | None = None,
     ) -> StructPropertyList:
         """
         Read a property-based struct from the archive.
-
-        Note: This imports the registry at runtime to avoid circular imports.
 
         Args:
             reader: The binary reader.
@@ -84,18 +82,25 @@ class StructPropertyList(Struct):
             struct_type: The struct type name.
             name_table: Optional name table for world saves (version 6+).
             worldsave_format: True for ASA WorldSave SQLite object format.
+            property_reader: Reader used to parse individual properties.
         """
-        # Import here to avoid circular dependency
-        from ..properties.registry import read_properties
+        if property_reader is None:
+            raise ValueError("Property reader is not configured")
 
         # Note: For ASA, the extra_byte that precedes struct data is read by the
         # calling code (StructProperty.read or ArrayProperty.read), not here.
         # We just read the properties directly.
 
-        properties = read_properties(
-            reader,
-            is_asa,
-            name_table=name_table,
-            worldsave_format=worldsave_format,
-        )
+        properties: list[Property] = []
+        while True:
+            prop = property_reader(
+                reader,
+                is_asa,
+                name_table=name_table,
+                worldsave_format=worldsave_format,
+            )
+            if prop is None:
+                break
+            properties.append(prop)
+
         return cls(_struct_type=struct_type, properties=properties)

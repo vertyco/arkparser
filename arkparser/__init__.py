@@ -6,7 +6,7 @@ This package provides tools to parse various ARK save file formats:
 - Profile: Player profile data (.arkprofile)
 - Tribe: Tribe data (.arktribe)
 - CloudInventory: Obelisk/cloud inventory data (no extension)
-- WorldSave: World save data (.ark) — auto-detects ASE binary and ASA SQLite
+- WorldSave: World save data (.ark), auto-detects ASE binary and ASA SQLite
 
 Supports both ASE (ARK: Survival Evolved) and ASA (ARK: Survival Ascended)
 formats with automatic detection.
@@ -26,7 +26,7 @@ Example usage:
     >>> inv = CloudInventory.load("path/to/obelisk_file")
     >>> print(f"Creatures: {inv.creature_count}, Items: {inv.item_count}")
     >>>
-    >>> # Load any world save — ASE or ASA, auto-detected
+    >>> # Load any world save: ASE or ASA, auto-detected
     >>> save = WorldSave.load("path/to/TheIsland.ark")    # ASE
     >>> save = WorldSave.load("path/to/Extinction_WP.ark")  # ASA
 """

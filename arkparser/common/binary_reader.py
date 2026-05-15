@@ -201,41 +201,45 @@ class BinaryReader:
             raise EndOfDataError(count, self.remaining)
         return self._stream.read(count)
 
+    def _unpack(self, fmt: str, size: int) -> t.Any:
+        """Read and unpack a fixed-size primitive value."""
+        return struct.unpack(fmt, self.read_bytes(size))[0]
+
     # =========================================================================
     # Integer Types
     # =========================================================================
 
     def read_int8(self) -> int:
         """Read a signed 8-bit integer (-128 to 127)."""
-        return struct.unpack(self._FMT_INT8, self._stream.read(1))[0]
+        return self._unpack(self._FMT_INT8, 1)
 
     def read_uint8(self) -> int:
         """Read an unsigned 8-bit integer (0 to 255)."""
-        return struct.unpack(self._FMT_UINT8, self._stream.read(1))[0]
+        return self._unpack(self._FMT_UINT8, 1)
 
     def read_int16(self) -> int:
         """Read a signed 16-bit integer."""
-        return struct.unpack(self._FMT_INT16, self._stream.read(2))[0]
+        return self._unpack(self._FMT_INT16, 2)
 
     def read_uint16(self) -> int:
         """Read an unsigned 16-bit integer."""
-        return struct.unpack(self._FMT_UINT16, self._stream.read(2))[0]
+        return self._unpack(self._FMT_UINT16, 2)
 
     def read_int32(self) -> int:
         """Read a signed 32-bit integer."""
-        return struct.unpack(self._FMT_INT32, self._stream.read(4))[0]
+        return self._unpack(self._FMT_INT32, 4)
 
     def read_uint32(self) -> int:
         """Read an unsigned 32-bit integer."""
-        return struct.unpack(self._FMT_UINT32, self._stream.read(4))[0]
+        return self._unpack(self._FMT_UINT32, 4)
 
     def read_int64(self) -> int:
         """Read a signed 64-bit integer."""
-        return struct.unpack(self._FMT_INT64, self._stream.read(8))[0]
+        return self._unpack(self._FMT_INT64, 8)
 
     def read_uint64(self) -> int:
         """Read an unsigned 64-bit integer."""
-        return struct.unpack(self._FMT_UINT64, self._stream.read(8))[0]
+        return self._unpack(self._FMT_UINT64, 8)
 
     # =========================================================================
     # Floating Point Types
@@ -243,11 +247,11 @@ class BinaryReader:
 
     def read_float(self) -> float:
         """Read a 32-bit IEEE 754 float."""
-        return struct.unpack(self._FMT_FLOAT, self._stream.read(4))[0]
+        return self._unpack(self._FMT_FLOAT, 4)
 
     def read_double(self) -> float:
         """Read a 64-bit IEEE 754 double."""
-        return struct.unpack(self._FMT_DOUBLE, self._stream.read(8))[0]
+        return self._unpack(self._FMT_DOUBLE, 8)
 
     # =========================================================================
     # Boolean

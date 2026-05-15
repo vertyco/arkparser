@@ -11,6 +11,10 @@ import logging
 import typing as t
 from dataclasses import dataclass, field
 
+from .common.binary_reader import BinaryReader
+from .common.normalization import normalize_indexed_data, normalize_indexed_list
+from .properties.registry import read_properties
+
 logger = logging.getLogger(__name__)
 
 
@@ -161,6 +165,8 @@ class UploadedCreature:
         Args:
             data: The raw dino data dictionary from parsing.
         """
+        data = t.cast(dict[str, t.Any], normalize_indexed_data(data))
+
         # Parse species from name like "Rex - Lvl 226 (Dodo)"
         dino_name = data.get("DinoName", "")
         species = ""
@@ -185,7 +191,7 @@ class UploadedCreature:
                 tame_name = dino_name
 
         # Parse stats
-        stats = DinoStats.from_stat_strings(data.get("DinoStats"))
+        stats = DinoStats.from_stat_strings(normalize_indexed_list(data.get("DinoStats")))
 
         return cls(
             class_name=data.get("DinoClass", ""),
@@ -282,9 +288,6 @@ class CryopodCreature:
         Returns:
             CryopodCreature with parsed data, or None if parsing fails.
         """
-        from .common.binary_reader import BinaryReader
-        from .properties.registry import read_properties
-
         try:
             reader = BinaryReader.from_bytes(bytes(byte_data))
 
@@ -479,10 +482,11 @@ class CryopodCreature:
             CryopodCreature with parsed data, or None if parsing fails.
         """
         try:
+            custom_data = t.cast(dict[str, t.Any], normalize_indexed_data(custom_data))
             cryo = cls()
 
             # Parse strings - need at least 3 for basic info
-            strings = custom_data.get("CustomDataStrings", [])
+            strings = normalize_indexed_list(custom_data.get("CustomDataStrings"))
             if len(strings) >= 3:
                 cryo.class_name = strings[0]  # e.g., "Raptor_Character_BP_C_2145673735"
                 display_name = strings[1]  # e.g., "bluey - Lvl 228 (Raptor)"
@@ -518,7 +522,7 @@ class CryopodCreature:
                     cryo.colors = [int(c) for c in color_parts if c.strip().isdigit()]
 
             # Parse color names
-            color_names = custom_data.get("CustomDataNames", [])
+            color_names = normalize_indexed_list(custom_data.get("CustomDataNames"))
             if color_names:
                 cryo.color_names = list(color_names)
 
@@ -526,7 +530,7 @@ class CryopodCreature:
             # Format varies by version:
             # - ASE: 25 floats - current[0-11], max[12-23], extra[24]
             # - ASA: 36 floats - current[0-10], max[11-21], extra[22-35]
-            floats = custom_data.get("CustomDataFloats", [])
+            floats = [float(value) for value in normalize_indexed_list(custom_data.get("CustomDataFloats"))]
             stat_names = [
                 "Health",
                 "Stamina",
@@ -559,7 +563,7 @@ class CryopodCreature:
                         cryo.max_stats[stat_name] = floats[max_idx]
 
             # Parse soft class for blueprint reference
-            soft_classes = custom_data.get("CustomDataSoftClasses", [])
+            soft_classes = normalize_indexed_list(custom_data.get("CustomDataSoftClasses"))
             if soft_classes:
                 first_class = soft_classes[0]
                 if isinstance(first_class, dict):
@@ -584,7 +588,7 @@ class CryopodCreature:
             max_health=self.max_stats.get("Health", 0.0),
             stamina=self.current_stats.get("Stamina", 0.0),
             max_stamina=self.max_stats.get("Stamina", 0.0),
-            torpidity=self.max_stats.get("Torpidity", 0.0),
+            torpidity=self.current_stats.get("Torpidity", 0.0),
             max_torpidity=self.max_stats.get("Torpidity", 0.0),
             oxygen=self.current_stats.get("Oxygen", 0.0),
             max_oxygen=self.max_stats.get("Oxygen", 0.0),
@@ -594,8 +598,8 @@ class CryopodCreature:
             max_water=self.max_stats.get("Water", 0.0),
             weight=self.current_stats.get("Weight", 0.0),
             max_weight=self.max_stats.get("Weight", 0.0),
-            melee_damage=self.current_stats.get("MeleeDamage", 1.0) * 100 + 100,
-            movement_speed=self.current_stats.get("MovementSpeed", 1.0) * 100 + 100,
+            melee_damage=self.current_stats.get("MeleeDamage", 0.0) * 100 + 100,
+            movement_speed=self.current_stats.get("MovementSpeed", 0.0) * 100 + 100,
             crafting_skill=self.current_stats.get("CraftingSkill", 1.0) * 100,
         )
 
@@ -671,7 +675,8 @@ class UploadedItem:
         Args:
             data: The raw item data dictionary from parsing.
         """
-        ark_tribute = data.get("ArkTributeItem", {})
+        data = t.cast(dict[str, t.Any], normalize_indexed_data(data))
+        ark_tribute = t.cast(dict[str, t.Any], normalize_indexed_data(data.get("ArkTributeItem", {})))
         item_id = ark_tribute.get("ItemId", {})
 
         # Extract item name from blueprint path
@@ -747,15 +752,15 @@ class UploadedItem:
             return self._cryopod_creature
 
         # Try to parse from CustomItemDatas
-        ark_tribute = self.raw_data.get("ArkTributeItem", {})
-        custom_datas = ark_tribute.get("CustomItemDatas", [])
+        ark_tribute = t.cast(dict[str, t.Any], normalize_indexed_data(self.raw_data.get("ArkTributeItem", {})))
+        custom_datas = normalize_indexed_list(ark_tribute.get("CustomItemDatas"))
 
         for entry in custom_datas:
             # Look for the "Dino" data entry
             if entry.get("CustomDataName") == "Dino":
                 # Prefer byte blob parsing (gives full creature/status properties)
-                cryo_bytes = entry.get("CustomDataBytes", {})
-                byte_arrays = cryo_bytes.get("ByteArrays", [])
+                cryo_bytes = t.cast(dict[str, t.Any], normalize_indexed_data(entry.get("CustomDataBytes", {})))
+                byte_arrays = normalize_indexed_list(cryo_bytes.get("ByteArrays"))
 
                 if byte_arrays and "Bytes" in byte_arrays[0]:
                     byte_data = byte_arrays[0]["Bytes"]
@@ -763,10 +768,10 @@ class UploadedItem:
                     if self._cryopod_creature:
                         # Supplement with CustomDataStrings/Names if available
                         # (species name at index 9, color names from CustomDataNames)
-                        strings = entry.get("CustomDataStrings", [])
+                        strings = normalize_indexed_list(entry.get("CustomDataStrings"))
                         if len(strings) > 9 and strings[9]:
                             self._cryopod_creature.species = strings[9]
-                        color_names = entry.get("CustomDataNames", [])
+                        color_names = normalize_indexed_list(entry.get("CustomDataNames"))
                         if color_names:
                             self._cryopod_creature.color_names = list(color_names)
                         return self._cryopod_creature

@@ -90,6 +90,8 @@ class Player:
         if not self._game_object:
             return 0
         val = self._game_object.get_property_value("TribeID", default=0)
+        if not val:
+            val = self._game_object.get_property_value("TribeId", default=0)
         return int(val) if val else 0
 
     @property
@@ -191,6 +193,8 @@ class Player:
         if not self._game_object:
             return ""
         val = self._game_object.get_property_value("UniqueID", default="")
+        if isinstance(val, dict):
+            return str(val.get("net_id", "") or "")
         if val:
             return str(val)
         return ""

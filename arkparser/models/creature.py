@@ -96,18 +96,13 @@ class Creature:
 
     @property
     def colors(self) -> list[int]:
-        """
-        Color region indices (6 values).
-
-        Returns:
-            List of 6 color indices for regions 0-5.
-        """
+        """Color region indices (6 values, regions 0-5)."""
         if self._colors is None:
-            self._colors = []
             if self._game_object:
-                for i in range(6):
-                    color = self._game_object.get_property_value("ColorSetIndices", index=i, default=0)
-                    self._colors.append(int(color) if color else 0)
+                self._colors = [
+                    int(v) if (v := self._game_object.get_property_value("ColorSetIndices", index=i, default=0)) else 0
+                    for i in range(6)
+                ]
             else:
                 self._colors = [0] * 6
         return self._colors
@@ -119,20 +114,20 @@ class Creature:
             return self._status_object.get_property_value("BaseCharacterLevel", default=1)
         return 1
 
+    def _read_stat_array(self, prop_name: str) -> list[int]:
+        """Read 12 indexed stat values from the status component."""
+        if not self._status_object:
+            return []
+        return [
+            int(v) if (v := self._status_object.get_property_value(prop_name, index=i, default=0)) else 0
+            for i in range(12)
+        ]
+
     @property
     def base_stats(self) -> CreatureStats:
-        """
-        Wild stat points (points applied at spawn).
-
-        These are the stat points the creature had before taming.
-        """
+        """Wild stat points (points applied at spawn)."""
         if self._base_stats is None:
-            points = []
-            if self._status_object:
-                for i in range(12):
-                    val = self._status_object.get_property_value("NumberOfLevelUpPointsApplied", index=i, default=0)
-                    points.append(int(val) if val else 0)
-            self._base_stats = CreatureStats.from_array(points)
+            self._base_stats = CreatureStats.from_array(self._read_stat_array("NumberOfLevelUpPointsApplied"))
         return self._base_stats
 
     @property
@@ -192,29 +187,25 @@ class Creature:
 
     def to_dict(self) -> dict[str, t.Any]:
         """Convert to dictionary matching C# ASV export format."""
+        colors = self.colors
+        bs = self.base_stats
         result: dict[str, t.Any] = {
             "id": self.dino_id,
             "creature": self.class_name,
             "sex": self.gender,
             "base": self.base_level,
-            "colors": self.colors,
-            "c0": self.colors[0] if len(self.colors) > 0 else 0,
-            "c1": self.colors[1] if len(self.colors) > 1 else 0,
-            "c2": self.colors[2] if len(self.colors) > 2 else 0,
-            "c3": self.colors[3] if len(self.colors) > 3 else 0,
-            "c4": self.colors[4] if len(self.colors) > 4 else 0,
-            "c5": self.colors[5] if len(self.colors) > 5 else 0,
+            "colors": colors,
+            **{f"c{i}": colors[i] if i < len(colors) else 0 for i in range(6)},
             "dinoid": str(self.dino_id),
-            "base_stats": self.base_stats.to_dict(),
-            # Flat stat fields matching C# wild export
-            "hp": self.base_stats.health,
-            "stam": self.base_stats.stamina,
-            "melee": self.base_stats.melee,
-            "weight": self.base_stats.weight,
-            "speed": self.base_stats.speed,
-            "food": self.base_stats.food,
-            "oxy": self.base_stats.oxygen,
-            "craft": self.base_stats.crafting,
+            "base_stats": bs.to_dict(),
+            "hp": bs.health,
+            "stam": bs.stamina,
+            "melee": bs.melee,
+            "weight": bs.weight,
+            "speed": bs.speed,
+            "food": bs.food,
+            "oxy": bs.oxygen,
+            "craft": bs.crafting,
         }
         if self.location:
             result["location"] = self.location.to_dict()
@@ -339,36 +330,16 @@ class TamedCreature(Creature):
 
     @property
     def tamed_stats(self) -> CreatureStats:
-        """
-        Tamed stat points (points added after taming).
-
-        These are the stat points allocated by the player.
-        """
+        """Tamed stat points (points added after taming)."""
         if self._tamed_stats is None:
-            points = []
-            if self._status_object:
-                for i in range(12):
-                    val = self._status_object.get_property_value(
-                        "NumberOfLevelUpPointsAppliedTamed", index=i, default=0
-                    )
-                    points.append(int(val) if val else 0)
-            self._tamed_stats = CreatureStats.from_array(points)
+            self._tamed_stats = CreatureStats.from_array(self._read_stat_array("NumberOfLevelUpPointsAppliedTamed"))
         return self._tamed_stats
 
     @property
     def mutated_stats(self) -> CreatureStats:
-        """
-        Mutated stat points (NumberOfMutationsAppliedTamed).
-
-        These are the stat points gained through mutations.
-        """
+        """Mutated stat points (gained through mutations)."""
         if self._mutated_stats is None:
-            points = []
-            if self._status_object:
-                for i in range(12):
-                    val = self._status_object.get_property_value("NumberOfMutationsAppliedTamed", index=i, default=0)
-                    points.append(int(val) if val else 0)
-            self._mutated_stats = CreatureStats.from_array(points)
+            self._mutated_stats = CreatureStats.from_array(self._read_stat_array("NumberOfMutationsAppliedTamed"))
         return self._mutated_stats
 
     @property
@@ -461,10 +432,7 @@ class TamedCreature(Creature):
         Parses DinoAncestors struct array to extract the father's
         combined DinoID1/DinoID2 values.
         """
-        ancestors = self._get_ancestors("DinoAncestors")
-        if ancestors:
-            return self._extract_dino_id(ancestors[0])
-        return None
+        return self._extract_parent_id("Male")
 
     @property
     def mother_id(self) -> int | None:
@@ -474,26 +442,17 @@ class TamedCreature(Creature):
         Parses DinoAncestorsMale struct array to extract the mother's
         combined DinoID1/DinoID2 values.
         """
-        ancestors = self._get_ancestors("DinoAncestorsMale")
-        if ancestors:
-            return self._extract_dino_id(ancestors[0])
-        return None
+        return self._extract_parent_id("Female")
 
     @property
     def father_name(self) -> str:
         """Father's name, if bred."""
-        ancestors = self._get_ancestors("DinoAncestors")
-        if ancestors:
-            return self._extract_ancestor_name(ancestors[0])
-        return ""
+        return self._extract_parent_name("Male")
 
     @property
     def mother_name(self) -> str:
         """Mother's name, if bred."""
-        ancestors = self._get_ancestors("DinoAncestorsMale")
-        if ancestors:
-            return self._extract_ancestor_name(ancestors[0])
-        return ""
+        return self._extract_parent_name("Female")
 
     def _get_ancestors(self, prop_name: str) -> list[t.Any]:
         """Get ancestor list from a DinoAncestors property."""
@@ -504,21 +463,45 @@ class TamedCreature(Creature):
             return val
         return []
 
-    def _extract_dino_id(self, ancestor: t.Any) -> int | None:
-        """Extract dino ID from an ancestor struct/dict."""
+    def _extract_parent_id(self, parent_prefix: str) -> int | None:
+        """Extract a parent dino ID from the first ancestor entry."""
+        ancestors = self._get_ancestors("DinoAncestors")
+        if not ancestors:
+            return None
+
+        ancestor = ancestors[0]
         if isinstance(ancestor, dict):
-            id1 = ancestor.get("DinoID1", 0)
-            id2 = ancestor.get("DinoID2", 0)
+            id1 = ancestor.get(f"{parent_prefix}DinoID1", 0)
+            id2 = ancestor.get(f"{parent_prefix}DinoID2", 0)
             if id1 or id2:
                 return (int(id1) << 32) | (int(id2) & 0xFFFFFFFF)
         return None
 
-    def _extract_ancestor_name(self, ancestor: t.Any) -> str:
-        """Extract name from an ancestor struct/dict."""
+    def _extract_parent_name(self, parent_prefix: str) -> str:
+        """Extract a parent name from the first ancestor entry."""
+        ancestors = self._get_ancestors("DinoAncestors")
+        if not ancestors:
+            return ""
+
+        ancestor = ancestors[0]
         if isinstance(ancestor, dict):
-            name = ancestor.get("DinoName", "") or ancestor.get("MaleName", "")
+            name = ancestor.get(f"{parent_prefix}Name", "") or ancestor.get("DinoName", "")
             return str(name) if name else ""
         return ""
+
+    @staticmethod
+    def _flat_stats(stats: CreatureStats, suffix: str) -> dict[str, int]:
+        """Expand a CreatureStats into flat keyed dict with the given suffix."""
+        return {
+            f"hp-{suffix}": stats.health,
+            f"stam-{suffix}": stats.stamina,
+            f"melee-{suffix}": stats.melee,
+            f"weight-{suffix}": stats.weight,
+            f"speed-{suffix}": stats.speed,
+            f"food-{suffix}": stats.food,
+            f"oxy-{suffix}": stats.oxygen,
+            f"craft-{suffix}": stats.crafting,
+        }
 
     def to_dict(self) -> dict[str, t.Any]:
         """Convert to dictionary matching C# ASV_Tamed export format."""
@@ -534,31 +517,9 @@ class TamedCreature(Creature):
                 "lvl": self.level,
                 "extra_level": self.extra_level,
                 "tamed_stats": self.tamed_stats.to_dict(),
-                # Flat tamed stat fields matching C# export
-                "hp-w": self.base_stats.health,
-                "stam-w": self.base_stats.stamina,
-                "melee-w": self.base_stats.melee,
-                "weight-w": self.base_stats.weight,
-                "speed-w": self.base_stats.speed,
-                "food-w": self.base_stats.food,
-                "oxy-w": self.base_stats.oxygen,
-                "craft-w": self.base_stats.crafting,
-                "hp-m": self.mutated_stats.health,
-                "stam-m": self.mutated_stats.stamina,
-                "melee-m": self.mutated_stats.melee,
-                "weight-m": self.mutated_stats.weight,
-                "speed-m": self.mutated_stats.speed,
-                "food-m": self.mutated_stats.food,
-                "oxy-m": self.mutated_stats.oxygen,
-                "craft-m": self.mutated_stats.crafting,
-                "hp-t": self.tamed_stats.health,
-                "stam-t": self.tamed_stats.stamina,
-                "melee-t": self.tamed_stats.melee,
-                "weight-t": self.tamed_stats.weight,
-                "speed-t": self.tamed_stats.speed,
-                "food-t": self.tamed_stats.food,
-                "oxy-t": self.tamed_stats.oxygen,
-                "craft-t": self.tamed_stats.crafting,
+                **self._flat_stats(self.base_stats, "w"),
+                **self._flat_stats(self.mutated_stats, "m"),
+                **self._flat_stats(self.tamed_stats, "t"),
                 "mut-f": self.mutations_female,
                 "mut-m": self.mutations_male,
                 "cryo": self.is_cryo,
@@ -617,7 +578,7 @@ class WildCreature(Creature):
         """
         Whether this creature can be tamed.
 
-        Checks for the RequiredTameAffinity property — if present and > 0,
+        Checks for the RequiredTameAffinity property: if present and > 0,
         the creature is tameable.
         """
         if not self._game_object:

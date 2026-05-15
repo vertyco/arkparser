@@ -145,6 +145,8 @@ class Tribe:
         if not self._game_object:
             return 0
         val = self._game_object.get_property_value("TribeID", default=0)
+        if not val:
+            val = self._game_object.get_property_value("TribeId", default=0)
         return int(val) if val else 0
 
     @property
@@ -160,6 +162,8 @@ class Tribe:
         if not self._game_object:
             return 0
         val = self._game_object.get_property_value("OwnerPlayerDataID", default=0)
+        if not val:
+            val = self._game_object.get_property_value("OwnerPlayerDataId", default=0)
         return int(val) if val else 0
 
     @property
@@ -180,7 +184,7 @@ class Tribe:
             if val is None:
                 break
             count += 1
-        return max(count, 1)  # At least the owner
+        return count
 
     @property
     def members(self) -> list[TribeMember]:

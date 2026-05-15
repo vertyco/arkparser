@@ -10,9 +10,31 @@ These are complex property types that contain other values or properties:
 from __future__ import annotations
 
 import typing as t
+import uuid
 from dataclasses import dataclass, field
 
+from ..structs import registry as struct_registry
 from .base import Property, PropertyHeader, read_name
+
+PropertyReader = t.Callable[..., t.Any]
+PropertiesReader = t.Callable[..., list[t.Any]]
+
+
+PROPERTY_READER: PropertyReader | None = None
+PROPERTIES_READER: PropertiesReader | None = None
+
+
+def set_property_reader(property_reader: PropertyReader) -> None:
+    """Register the single-property reader used by compound properties."""
+    global PROPERTY_READER
+    PROPERTY_READER = property_reader
+
+
+def set_properties_reader(properties_reader: PropertiesReader) -> None:
+    """Register the property-list reader used by compound properties."""
+    global PROPERTIES_READER
+    PROPERTIES_READER = properties_reader
+
 
 if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
@@ -434,11 +456,14 @@ def _read_array_elements(
             # For ASA string-based files (no name table), struct array elements
             # do NOT have per-element headers. They directly start with properties.
             # The struct_type from the array header applies to all elements.
-            from ..structs.registry import read_struct
-
             # All elements are read as property-list structs with the same type
             for struct_idx in range(actual_count):
-                struct_value = read_struct(reader, struct_type, is_asa, name_table=name_table)
+                struct_value = struct_registry.read_struct(
+                    reader,
+                    struct_type,
+                    is_asa,
+                    name_table=name_table,
+                )
                 if hasattr(struct_value, "to_dict"):
                     values.append(struct_value.to_dict())
                 else:
@@ -455,10 +480,13 @@ def _read_array_elements(
                 reader.skip(array_data_end - reader.position)
         else:
             # ASE struct arrays - read as property-based structs
-            from ..structs.registry import read_struct_for_array
-
             for _ in range(count):
-                struct = read_struct_for_array(reader, array_name, is_asa, name_table=name_table)
+                struct = struct_registry.read_struct_for_array(
+                    reader,
+                    array_name,
+                    is_asa,
+                    name_table=name_table,
+                )
                 if hasattr(struct, "to_dict"):
                     values.append(struct.to_dict())
                 else:
@@ -543,8 +571,6 @@ def _read_worldsave_array_elements(
             values.append(name)
     elif element_type == "ObjectProperty":
         # WorldSave object references: 2 bytes marker + name(8) or GUID(16)
-        from uuid import UUID
-
         for _ in range(count):
             marker = reader.read_uint16()
             if marker == 1:
@@ -561,7 +587,7 @@ def _read_worldsave_array_elements(
                 if all(b == 0 for b in guid_bytes):
                     values.append(None)
                 else:
-                    guid = UUID(bytes_le=guid_bytes)
+                    guid = uuid.UUID(bytes_le=guid_bytes)
                     values.append(str(guid))
     elif element_type == "StructProperty":
         # This shouldn't be called anymore - struct arrays use
@@ -610,16 +636,13 @@ def _read_worldsave_struct_array_elements(
     Returns:
         List of struct element values (dicts for native, dicts for prop-lists).
     """
-    from ..structs.registry import STRUCT_REGISTRY, read_struct
-    from .registry import read_property
-
     values: list[t.Any] = []
 
     # Check if this is a native struct type (fixed binary format)
-    if struct_type in STRUCT_REGISTRY:
+    if struct_type in struct_registry.STRUCT_REGISTRY:
         # Native struct: each element is a fixed-size binary blob
         for _ in range(count):
-            struct_obj = read_struct(
+            struct_obj = struct_registry.read_struct(
                 reader,
                 struct_type,
                 is_asa=True,
@@ -637,7 +660,10 @@ def _read_worldsave_struct_array_elements(
         struct_props: dict[str, t.Any] = {"_struct_type": struct_type}
 
         while True:
-            prop = read_property(
+            if PROPERTY_READER is None:
+                raise ValueError("Property reader is not configured")
+
+            prop = PROPERTY_READER(
                 reader,
                 is_asa=True,
                 name_table=name_table,
@@ -789,19 +815,20 @@ class StructProperty(Property):
             # ASA profiles/tribes (version 6) have a 17-byte header after the struct type
             # for property-list structs (structs NOT in the native struct registry).
             # This 17-byte block is: extra1(4) + script_path_len(4, value 0) + zeros(4) +
-            # data_size(4) + extra_byte(1) — all zeros in v6 files.
+            # data_size(4) + extra_byte(1): all zeros in v6 files.
             # Native structs (UniqueNetIdRepl, LinearColor, Vector, etc.) have their raw data
             # immediately after the struct_type string with no padding.
-            if is_asa:
-                from ..structs.registry import STRUCT_REGISTRY
-
-                if struct_type not in STRUCT_REGISTRY:
-                    reader.skip(17)
+            if is_asa and struct_type not in struct_registry.STRUCT_REGISTRY:
+                reader.skip(17)
 
         # Use the struct registry to read the value
-        from ..structs.registry import read_struct
-
-        struct_value = read_struct(reader, struct_type, is_asa, has_index_prefix, name_table=name_table)
+        struct_value = struct_registry.read_struct(
+            reader,
+            struct_type,
+            is_asa,
+            has_index_prefix,
+            name_table=name_table,
+        )
 
         return cls(
             name=header.name,
@@ -882,9 +909,7 @@ class StructProperty(Property):
 
         # Use the struct registry to read the value
         # For WorldSave, we pass worldsave_format=True to the struct reader
-        from ..structs.registry import read_struct
-
-        struct_value = read_struct(
+        struct_value = struct_registry.read_struct(
             reader,
             struct_type,
             is_asa=True,
@@ -1094,9 +1119,10 @@ class MapProperty(Property):
                     # Read value based on value type
                     if value_type == "StructProperty":
                         # Value is a struct property list (ends with None)
-                        from .registry import read_properties
+                        if PROPERTIES_READER is None:
+                            raise ValueError("Properties reader is not configured")
 
-                        struct_props = read_properties(
+                        struct_props = PROPERTIES_READER(
                             reader,
                             is_asa=True,
                             name_table=name_table,

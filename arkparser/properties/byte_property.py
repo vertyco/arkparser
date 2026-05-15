@@ -123,12 +123,13 @@ class ByteProperty(Property):
                 _data_size = reader.read_int32()
                 flag = reader.read_uint8()
                 # Simple prefix: if flag bit 0 is set, read array_index
+                array_index = header.index
                 if flag & 0x01:
-                    _array_index = reader.read_int32()
+                    array_index = reader.read_int32()
                 byte_value = reader.read_uint8()
                 return cls(
                     name=header.name,
-                    index=header.index,
+                    index=array_index,
                     enum_name="None",
                     _byte_value=byte_value,
                 )

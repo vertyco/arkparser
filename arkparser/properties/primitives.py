@@ -15,6 +15,7 @@ Property Types:
 from __future__ import annotations
 
 import typing as t
+import uuid
 from dataclasses import dataclass
 
 from .base import Property, PropertyHeader, read_name
@@ -637,8 +638,6 @@ class ObjectProperty(Property):
         """
         if worldsave_format:
             # WorldSave format: prefix + 2 byte marker + name(8) or GUID(16)
-            from uuid import UUID
-
             _data_size, _flag, index = _read_worldsave_simple_prefix(reader)
             index = header.index
             marker = reader.read_uint16()
@@ -659,7 +658,7 @@ class ObjectProperty(Property):
                 guid_bytes = reader.read_bytes(16)
                 if all(b == 0 for b in guid_bytes):
                     return cls(name=header.name, index=index)
-                guid = UUID(bytes_le=guid_bytes)
+                guid = uuid.UUID(bytes_le=guid_bytes)
                 return cls(name=header.name, index=index, _object_name=str(guid))
         elif is_asa:
             extra_byte = reader.read_uint8()
