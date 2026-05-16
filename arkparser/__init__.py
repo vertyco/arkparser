@@ -1,4 +1,4 @@
-"""
+﻿"""
 ARK Save Parser - Parse ARK: Survival Evolved/Ascended save files.
 
 This package provides tools to parse various ARK save file formats:
@@ -115,4 +115,4 @@ __all__ = [
     "ArkParseError",
 ]
 
-__version__ = "0.1.6"
+__version__ = "0.1.7"

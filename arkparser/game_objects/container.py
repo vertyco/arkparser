@@ -141,23 +141,26 @@ class GameObjectContainer:
     def get_structures(self) -> list[GameObject]:
         """Get all tribe-owned placed structures.
 
-        Component sub-objects (has_parent_names=True) share the same coordinates
-        as their parent structure and must be excluded to avoid double-counting.
-        Every placed structure actor in ARK's save format is a root-level object
-        (one name only); its child inventory/component objects carry additional
-        names pointing back to the parent.
+        ASE saves include the same actor in both the main level and sub-levels,
+        producing duplicate entries with identical Names[0]. Deduplicating by
+        primary_name matches the C# ASVPack reference (ContentContainer.cs:1049):
+            .GroupBy(x => x.Names[0]).Select(s => s.First())
         """
+        seen_names: set[str] = set()
         results: list[GameObject] = []
         for obj in self.objects:
             cn = obj.class_name
-            if obj.has_parent_names:
-                continue
             if obj.get_property_value("TargetingTeam") is None:
                 continue
             if obj.get_property_value("DinoID1") is not None:
                 continue
             if any(pat in cn for pat in self._NON_STRUCTURE_PATTERNS):
                 continue
+            name = obj.primary_name
+            if name is not None:
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
             results.append(obj)
         return results
 
