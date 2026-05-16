@@ -135,16 +135,34 @@ class Profile(ArkFile):
 
     @property
     def tribe_id(self) -> int | None:
-        """
-        Get the player's tribe ID (0 if not in a tribe).
+        """Get the player's tribe ID.
+
+        Purpose: return the tribe id ARK actually uses for this player.
+        Solo players (never joined a non-default tribe) carry only an
+        "auto-tribe" whose id equals their ``PlayerDataID``; the profile
+        stores ``TribeId=0`` for them. To match the legacy ASVExport / ARK
+        engine convention (and to give consumers a unique-per-player tribe
+        id they can group by), fall back to ``player_id`` in that case.
+
+        Preconditions: ``_player_data`` is parsed; ``PlayerDataID`` (used by
+        the auto-tribe fallback) may be missing for malformed profiles.
+        Postconditions: returns the explicit ``TribeId``/``TribeID`` when
+        non-zero, otherwise returns ``player_id``. Returns ``None`` only
+        when ``player_id`` is also missing.
+        Side effects: none.
+        Failure modes: returns ``None`` when neither field is recoverable.
 
         Note: ASE uses "TribeId" (lowercase d), ASA uses "TribeID" (uppercase D).
         """
-        if "TribeId" in self._player_data:
-            return self._player_data["TribeId"]
-        if "TribeID" in self._player_data:
-            return self._player_data["TribeID"]
-        return None
+        raw = self._player_data.get("TribeId")
+        if raw is None:
+            raw = self._player_data.get("TribeID")
+        if raw:  # non-zero, non-None
+            return raw
+        # Solo player or freshly-left a tribe: ARK's auto-tribe id == player_id.
+        # Matches ASVExport behavior (and gives every player a stable, unique
+        # tribe id even when they're not in a multi-member tribe).
+        return self.player_id
 
     @property
     def tribe_name(self) -> str | None:

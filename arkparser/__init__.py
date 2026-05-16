@@ -115,4 +115,4 @@ __all__ = [
     "ArkParseError",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.5"
