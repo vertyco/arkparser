@@ -139,10 +139,19 @@ class GameObjectContainer:
         return [obj for obj in self.objects if obj.is_item]
 
     def get_structures(self) -> list[GameObject]:
-        """Get all tribe-owned placed structures."""
+        """Get all tribe-owned placed structures.
+
+        Component sub-objects (has_parent_names=True) share the same coordinates
+        as their parent structure and must be excluded to avoid double-counting.
+        Every placed structure actor in ARK's save format is a root-level object
+        (one name only); its child inventory/component objects carry additional
+        names pointing back to the parent.
+        """
         results: list[GameObject] = []
         for obj in self.objects:
             cn = obj.class_name
+            if obj.has_parent_names:
+                continue
             if obj.get_property_value("TargetingTeam") is None:
                 continue
             if obj.get_property_value("DinoID1") is not None:
