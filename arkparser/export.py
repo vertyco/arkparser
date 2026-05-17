@@ -500,9 +500,18 @@ def _get_worldsave_objects(save: t.Any, getter_name: str, legacy_attr: str) -> l
 
 
 def _resolve_reference(ref: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
-    """Resolve an object reference stored as an ID, GUID, or name."""
+    """Resolve an object reference to a game object.
+
+    Handles three reference forms:
+    - int or str: direct lookup (ASE object IDs, GUID strings, name strings)
+    - (type_tag, value) tuple: array-property format where type_tag is "id",
+      "name", or "path" and value is the actual lookup key
+    """
     if ref is None:
         return None
+    if isinstance(ref, tuple) and len(ref) == 2:
+        _, key = ref
+        return lookup.get(key)
     return lookup.get(ref)
 
 
@@ -598,14 +607,29 @@ def _find_status_component(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
 
 
 def _get_inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t.Any]]:
-    """Get inventory items for a creature."""
+    """Get inventory items for a game object (creature or structure).
+
+    Tries two strategies in order:
+    1. MyInventoryComponent property + reference lookup (works for ASE and some ASA objects).
+    2. Iterate obj.components to find the first component whose class_name contains
+       "Inventory" (fallback for ASA, where the property may be absent).
+    """
     items: list[dict[str, t.Any]] = []
 
-    inv_ref = None
+    inv_obj = None
+
+    # Strategy 1: property reference
     if hasattr(obj, "get_property_value"):
         inv_ref = obj.get_property_value("MyInventoryComponent", default=None)
+        if inv_ref is not None:
+            inv_obj = _resolve_reference(inv_ref, lookup)
 
-    inv_obj = _resolve_reference(inv_ref, lookup)
+    # Strategy 2: component dict (ASA or when property is absent)
+    if inv_obj is None and hasattr(obj, "components"):
+        for comp in obj.components.values():
+            if "Inventory" in getattr(comp, "class_name", ""):
+                inv_obj = comp
+                break
 
     if inv_obj is None:
         return items
