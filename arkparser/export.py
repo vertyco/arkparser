@@ -276,6 +276,8 @@ def export_structures(
     results: list[dict[str, t.Any]] = []
 
     struct_objs = _get_worldsave_objects(save, "get_structures", "structure_objects")
+    objects = save.objects if hasattr(save, "objects") else {}
+    obj_lookup = _build_lookup(objects)
 
     for obj in struct_objs:
         structure = Structure.from_game_object(obj)
@@ -287,6 +289,8 @@ def export_structures(
                 data["lat"] = mapped_loc.latitude
             if mapped_loc.longitude is not None:
                 data["lon"] = mapped_loc.longitude
+
+        data["inventory"] = _get_inventory_items(obj, obj_lookup)
 
         results.append(data)
 
