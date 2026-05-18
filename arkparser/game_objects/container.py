@@ -121,14 +121,35 @@ class GameObjectContainer:
         "DinoDropInventory",
     )
 
-    def _is_creature_object(self, obj: GameObject) -> bool:
-        """Return ``True`` for top-level creature actors only."""
-        class_name = obj.class_name
-        if not class_name or obj.is_item:
-            return False
+    # Vehicles that carry DinoID1/bServerInitializedDino but are not creatures.
+    # Source: C# GameObjectExtensions.IsCreature (SavegameToolkitAdditions).
+    _VEHICLE_CLASS_NAMES: t.ClassVar[frozenset[str]] = frozenset({
+        "MotorRaft_BP_C",
+        "Raft_BP_C",
+        "TekHoverSkiff_Character_BP_C",
+        "CogRaft_BP_C",
+        "DingyRaft_BP_C",
+        "LongshipRaft_BP_C",
+        "SRaft_BP_C",
+    })
 
-        is_creature = "_Character_BP" in class_name or "DinoCharacter" in class_name
-        return is_creature and "StatusComponent" not in class_name and "Inventory" not in class_name
+    def _is_creature_object(self, obj: GameObject) -> bool:
+        """Return ``True`` for top-level creature actors only.
+
+        Primary check mirrors C# GameObjectExtensions.IsCreature: presence of
+        ``bServerInitializedDino`` AND not a vehicle.  Falls back to class name
+        patterns for unit tests and edge cases where properties are absent.
+        """
+        if obj.is_item:
+            return False
+        if obj.class_name in self._VEHICLE_CLASS_NAMES:
+            return False
+        if obj.get_property_value("bServerInitializedDino") is not None:
+            return True
+        # Class-name fallback for minimal test objects or pre-property-load pass.
+        cn = obj.class_name
+        is_character = "_Character_" in cn or "DinoCharacter" in cn
+        return is_character and "StatusComponent" not in cn and "Inventory" not in cn
 
     def get_creatures(self) -> list[GameObject]:
         """Get all creature objects (tamed and wild)."""
@@ -138,8 +159,48 @@ class GameObjectContainer:
         """Get all item objects."""
         return [obj for obj in self.objects if obj.is_item]
 
+    # Class-name substrings for environmental map elements that should NOT
+    # appear in get_structures() (they go through get_terminals/get_nests/etc).
+    _MAP_ELEMENT_PATTERNS: t.ClassVar[tuple[str, ...]] = (
+        "TributeTerminal",
+        "CityTerminal",
+        "ArtifactCrate",
+        "OilVein",
+        "WaterVein",
+        "GasVein",
+        "ChargeNode",
+        "ElementVein",
+        "BeaverDam",
+        "Nest",
+    )
+
+    def _is_structure(self, obj: GameObject) -> bool:
+        """Return ``True`` if the object is a structure per the C# IsStructure rule.
+
+        Mirrors C# GameObjectExtensions.IsStructure: has OwnerName OR
+        bHasResetDecayTime OR is one of the known vehicle/special class names;
+        excludes the Structure_LoadoutDummy_Hotbar_C, cryo-pinned objects,
+        DeathItemCache_ entries, and environmental map elements (which belong
+        in map_structures, not player structures).
+        """
+        cn = obj.class_name
+        if cn == "Structure_LoadoutDummy_Hotbar_C":
+            return False
+        if cn.startswith("DeathItemCache_"):
+            return False
+        if obj.get_property_value("IsInCryo"):
+            return False
+        # CherufeNest_C is explicitly a structure per the C# rule.
+        if cn != "CherufeNest_C" and any(p in cn for p in self._MAP_ELEMENT_PATTERNS):
+            return False
+        if obj.get_property_value("OwnerName") is not None:
+            return True
+        if obj.get_property_value("bHasResetDecayTime") is not None:
+            return True
+        return cn == "CherufeNest_C" or cn in self._VEHICLE_CLASS_NAMES
+
     def get_structures(self) -> list[GameObject]:
-        """Get all tribe-owned placed structures.
+        """Get all placed structures.
 
         ASE saves include the same actor in both the main level and sub-levels,
         producing duplicate entries with identical Names[0]. Deduplicating by
@@ -149,12 +210,7 @@ class GameObjectContainer:
         seen_names: set[str] = set()
         results: list[GameObject] = []
         for obj in self.objects:
-            cn = obj.class_name
-            if obj.get_property_value("TargetingTeam") is None:
-                continue
-            if obj.get_property_value("DinoID1") is not None:
-                continue
-            if any(pat in cn for pat in self._NON_STRUCTURE_PATTERNS):
+            if not self._is_structure(obj):
                 continue
             name = obj.primary_name
             if name is not None:
@@ -222,6 +278,16 @@ class GameObjectContainer:
             obj
             for obj in self.objects
             if any(p in obj.class_name for p in _RESOURCE_PATTERNS)
+            and "Inventory" not in obj.class_name
+            and not obj.is_item
+        ]
+
+    def get_nests(self) -> list[GameObject]:
+        """Get creature nest objects (wyvern, drake, etc.). Inventory excluded."""
+        return [
+            obj
+            for obj in self.objects
+            if "Nest" in obj.class_name
             and "Inventory" not in obj.class_name
             and not obj.is_item
         ]

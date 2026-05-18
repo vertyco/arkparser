@@ -351,8 +351,40 @@ def export_tribe_logs(
 
 
 # -------------------------------------------------------------------------
-# Map Structures (ASV_MapStructures): structures with GPS coords
+# Map Structures (ASV_MapStructures): untribed environmental map elements
 # -------------------------------------------------------------------------
+
+# Canonical match rules. Mirrors C# ContentContainer.cs:846.
+# (pattern, label, match_kind) where match_kind is "startswith" or "contains".
+# Order matters: first match wins.
+_MAP_STRUCT_RULES: tuple[tuple[str, str, str], ...] = (
+    ("TributeTerminal_", "ASV_Terminal", "startswith"),
+    ("CityTerminal_", "ASV_Terminal", "contains"),
+    ("PowerNodeCharge", "ASV_ChargeNode", "startswith"),
+    ("BeaverDam_C", "ASV_BeaverDam", "startswith"),
+    ("DeinonychusNest_C", "ASV_DeinoNest", "startswith"),
+    ("RockDrakeNest_C", "ASV_DrakeNest", "startswith"),
+    ("CherufeNest_C", "ASV_MagmaNest", "startswith"),
+    ("WyvernNest_", "ASV_WyvernNest", "startswith"),
+    ("OilVein_", "ASV_OilVein", "startswith"),
+    ("WaterVein_", "ASV_WaterVein", "startswith"),
+    ("GasVein_", "ASV_GasVein", "startswith"),
+    ("ArtifactCrate_", "ASV_Artifact", "startswith"),
+    # PlantSpeciesZ_Wild_C is in the C# prefix list but legacy doesn't actually
+    # emit them — only player-grown plants are surfaced.
+    ("Structure_PlantSpeciesZ_PlayerGrown", "ASV_PlantSpeciesZ", "startswith"),
+    ("BeeHive_C", "ASV_BeeHive", "startswith"),
+)
+
+
+def _asv_map_struct_label(class_name: str) -> str | None:
+    for pattern, label, kind in _MAP_STRUCT_RULES:
+        if kind == "startswith":
+            if class_name.startswith(pattern):
+                return label
+        elif pattern in class_name:
+            return label
+    return None
 
 
 def export_map_structures(
@@ -360,18 +392,43 @@ def export_map_structures(
     map_config: MapConfig | None = None,
 ) -> list[dict[str, t.Any]]:
     """
-    Export structures with map coordinates in ASV_MapStructures format.
+    Export environmental map elements in ASV_MapStructures format.
 
-    Same as ASV_Structures but intended for map visualisation with GPS coords.
+    Mirrors C# ContentContainer.cs:846 filter:
+      * has a Location
+      * TargetingTeam is null
+      * class_name starts with one of the canonical map-element prefixes.
 
-    Args:
-        save: A parsed savegame.
-        map_config: Map config for GPS coordinate conversion.
-
-    Returns:
-        List of structure dictionaries with GPS coordinates.
+    Does NOT include player structures.
     """
-    return export_structures(save, map_config)
+    assert hasattr(save, "objects"), "save must expose .objects"
+    objects = save.objects if hasattr(save, "objects") else {}
+    obj_lookup = _build_lookup(objects)
+    all_objs = list(objects.values()) if isinstance(objects, dict) else list(objects)
+
+    results: list[dict[str, t.Any]] = []
+    bound = len(all_objs) + 1
+    for i, obj in enumerate(all_objs):
+        assert i < bound
+        cn = getattr(obj, "class_name", "") or ""
+        label = _asv_map_struct_label(cn)
+        if label is None:
+            continue
+        loc = getattr(obj, "location", None)
+        if loc is None:
+            continue
+        if obj.get_property_value("TargetingTeam") is not None:
+            continue
+        ccc = f"{loc.x} {loc.y} {loc.z}"
+        data: dict[str, t.Any] = {"struct": label, "ccc": ccc}
+        if map_config is not None:
+            data["lat"] = map_config.ue_to_lat(loc.y)
+            data["lon"] = map_config.ue_to_lon(loc.x)
+        data["inventory"] = _get_inventory_items(obj, obj_lookup)
+        results.append(data)
+
+    assert isinstance(results, list)
+    return results
 
 
 # -------------------------------------------------------------------------
@@ -478,6 +535,9 @@ def _get_collection(source: t.Any, attr_name: str, parser_type: type[t.Any]) -> 
     """Normalize a parser collection or single parser instance to a list."""
     if isinstance(source, parser_type):
         return [source]
+    # source may already be a list of parser objects
+    if isinstance(source, (list, tuple)):
+        return list(source)
 
     values = getattr(source, attr_name, None)
     if isinstance(values, (list, tuple)):

@@ -217,31 +217,23 @@ class WorldSave:
         """Return all objects whose ``class_name`` contains *class_name*."""
         return self.container.find_by_class_pattern(class_name)
 
-    _TAMED_MARKER_PROPERTIES: t.ClassVar[tuple[str, ...]] = (
-        "TamerString",
-        "TamedName",
-        "TamedAtTime",
-        "TribeName",
-        "TamedOnServerName",
-        "UploadedFromServerName",
-        "ImprinterName",
-        "ImprinterPlayerDataID",
-    )
+    # TargetingTeam threshold: the C# reference (TeamType.cs) uses 50_000 as the
+    # boundary between non-player (wild/AI) and player-owned teams.
+    _PLAYER_TEAM_THRESHOLD: t.ClassVar[int] = 50_000
+    # Unclaimed babies use 2_000_000_000 as a sentinel; still tamed.
+    _BREEDING_SENTINEL: t.ClassVar[int] = 2_000_000_000
 
     def _is_tamed_creature(self, obj: GameObject) -> bool:
-        """Return ``True`` if a creature carries tame ownership markers."""
-        taming_team = obj.get_property_value("TamingTeamID")
-        if isinstance(taming_team, (int, float)) and taming_team > 0:
-            return True
+        """Return ``True`` if a creature is player-owned.
 
+        Mirrors C# GameObjectExtensions.IsTamed: targeting_team >= 50_000.
+        The breeding sentinel (2_000_000_000) is also considered tamed.
+        """
         targeting_team = obj.get_property_value("TargetingTeam")
-        if isinstance(targeting_team, (int, float)) and targeting_team > 1000:
-            return True
-
-        return any(
-            obj.get_property_value(prop_name) not in (None, "", 0, 0.0, False)
-            for prop_name in self._TAMED_MARKER_PROPERTIES
-        )
+        if not isinstance(targeting_team, (int, float)):
+            return False
+        team = int(targeting_team)
+        return team >= self._PLAYER_TEAM_THRESHOLD
 
     def get_creatures(self) -> list[GameObject]:
         """Return all creature objects (tamed **and** wild)."""
@@ -282,6 +274,10 @@ class WorldSave:
     def get_map_resources(self) -> list[GameObject]:
         """Return engine-placed resource / vein / node objects."""
         return self.container.get_map_resources()
+
+    def get_nests(self) -> list[GameObject]:
+        """Return creature nest objects (wyvern, drake, etc.)."""
+        return self.container.get_nests()
 
     # ------------------------------------------------------------------
     # Properties
