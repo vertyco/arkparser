@@ -58,7 +58,10 @@ class ArkFile(ABC):
         for obj in self.objects:
             # ASA uses full path like "/Script/ShooterGame.ArkCloudInventoryData"
             # ASE uses just "ArkCloudInventoryData"
-            if self.MAIN_CLASS_NAME in obj.class_name:
+            # Some corrupted obelisk files emit non-string class_names (ints,
+            # None, etc.); skip them rather than crashing the whole load.
+            cn = obj.class_name
+            if isinstance(cn, str) and self.MAIN_CLASS_NAME in cn:
                 return obj
         return None
 

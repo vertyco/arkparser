@@ -223,17 +223,42 @@ class WorldSave:
     # Unclaimed babies use 2_000_000_000 as a sentinel; still tamed.
     _BREEDING_SENTINEL: t.ClassVar[int] = 2_000_000_000
 
+    # Property names that indicate a creature was tamed by a player. Cryo'd
+    # creatures often have their TargetingTeam stripped to 0 while keeping
+    # these markers, so we check them as a fallback after the team-id rule.
+    _TAMED_MARKER_PROPERTIES: t.ClassVar[tuple[str, ...]] = (
+        "TamerString",
+        "TamedName",
+        "TamedAtTime",
+        "TribeName",
+        "TamedOnServerName",
+        "UploadedFromServerName",
+        "ImprinterName",
+        "ImprinterPlayerDataID",
+        "TamingTeamID",
+    )
+
     def _is_tamed_creature(self, obj: GameObject) -> bool:
         """Return ``True`` if a creature is player-owned.
 
-        Mirrors C# GameObjectExtensions.IsTamed: targeting_team >= 50_000.
-        The breeding sentinel (2_000_000_000) is also considered tamed.
+        Two paths:
+        - Primary (C# parity, GameObjectExtensions.IsTamed): targeting_team
+          ``>= 50_000``. The breeding sentinel (``2_000_000_000``) is also
+          considered tamed because it falls above the threshold.
+        - Fallback for cryo'd creatures: ARK strips ``TargetingTeam`` on
+          cryopod'd dinos but retains ``TamerString``/``TamedName``/
+          ``TamingTeamID``/etc. Without this fallback we lose every cryo'd
+          tame on the map. (Restored from the pre-0.1.x parser behavior;
+          dropping it caused a ~2k-tame regression on live PvE servers.)
         """
         targeting_team = obj.get_property_value("TargetingTeam")
-        if not isinstance(targeting_team, (int, float)):
-            return False
-        team = int(targeting_team)
-        return team >= self._PLAYER_TEAM_THRESHOLD
+        if isinstance(targeting_team, (int, float)):
+            if int(targeting_team) >= self._PLAYER_TEAM_THRESHOLD:
+                return True
+        return any(
+            obj.get_property_value(prop_name) not in (None, "", 0, 0.0, False)
+            for prop_name in self._TAMED_MARKER_PROPERTIES
+        )
 
     def get_creatures(self) -> list[GameObject]:
         """Return all creature objects (tamed **and** wild)."""

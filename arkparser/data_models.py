@@ -679,13 +679,16 @@ class UploadedItem:
         ark_tribute = t.cast(dict[str, t.Any], normalize_indexed_data(data.get("ArkTributeItem", {})))
         item_id = ark_tribute.get("ItemId", {})
 
-        # Extract item name from blueprint path
-        blueprint = ark_tribute.get("ItemArchetype", "")
+        # Extract item name from blueprint path. Corrupted/legacy cluster
+        # entries occasionally store ItemArchetype as a non-string sentinel
+        # (int 0, None, etc.); coerce so the downstream ``"." in blueprint``
+        # doesn't TypeError out the whole CloudInventory.uploaded_items call.
+        raw_blueprint = ark_tribute.get("ItemArchetype", "")
+        blueprint = raw_blueprint if isinstance(raw_blueprint, str) else ""
         name = ""
-        if blueprint:
+        if blueprint and "." in blueprint:
             # Extract class name from path like "BlueprintGeneratedClass /Game/.../WeaponTek.WeaponTek_C"
-            if "." in blueprint:
-                name = blueprint.rsplit(".", 1)[-1].replace("_C", "")
+            name = blueprint.rsplit(".", 1)[-1].replace("_C", "")
 
         return cls(
             blueprint=blueprint,
