@@ -115,8 +115,29 @@ class Tribe(ArkFile):
 
     @property
     def alliance_ids(self) -> list[int]:
-        """Get IDs of allied tribes."""
-        return [int(alliance_id) for alliance_id in normalize_indexed_list(self._tribe_data.get("TribeAlliances"))]
+        """Get IDs of allied tribes.
+
+        TribeAlliances normally serializes as a list of AllianceData structs
+        (dicts with ``AllianceID``, ``AllianceName``, ``MembersTribeIDs``,
+        etc.). Older / Prim+ / corrupted saves sometimes emit a flat list of
+        ints instead. Accept both forms and skip entries we cannot coerce.
+        """
+        out: list[int] = []
+        for entry in normalize_indexed_list(self._tribe_data.get("TribeAlliances")):
+            if isinstance(entry, dict):
+                aid = entry.get("AllianceID")
+                if aid is None:
+                    continue
+                try:
+                    out.append(int(aid))
+                except (TypeError, ValueError):
+                    continue
+            else:
+                try:
+                    out.append(int(entry))
+                except (TypeError, ValueError):
+                    continue
+        return out
 
     @property
     def government_type(self) -> int:
