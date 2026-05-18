@@ -174,30 +174,74 @@ class GameObjectContainer:
         "Nest",
     )
 
-    def _is_structure(self, obj: GameObject) -> bool:
-        """Return ``True`` if the object is a structure per the C# IsStructure rule.
+    # Class-name fragments that always disqualify an object from being treated
+    # as a structure — even if it carries TargetingTeam. Used by the
+    # tribe-owned fallback below to catch flex pipes/wires (which lack
+    # OwnerName/bHasResetDecayTime) without sweeping in creatures, items,
+    # buffs, etc.
+    _NON_STRUCTURE_PATTERNS: t.ClassVar[tuple[str, ...]] = (
+        "_Character_BP",
+        "DinoCharacter",
+        "PlayerPawn",
+        "Buff_",
+        "PrimalBuff",
+        "Weap",
+        "StatusComponent",
+        "Inventory",
+        "DroppedItem",
+        "DeathItemCache",
+        "NPCZone",
+        "DinoDropInventory",
+    )
 
-        Mirrors C# GameObjectExtensions.IsStructure: has OwnerName OR
-        bHasResetDecayTime OR is one of the known vehicle/special class names;
-        excludes the Structure_LoadoutDummy_Hotbar_C, cryo-pinned objects,
-        DeathItemCache_ entries, and environmental map elements (which belong
-        in map_structures, not player structures).
+    def _is_structure(self, obj: GameObject) -> bool:
+        """Return ``True`` if the object is a placed structure.
+
+        Three-tier rule (in order, first match wins):
+
+        1. Hard exclusions: loadout dummies, death item caches, cryo-pinned
+           objects, and environmental map elements (which surface separately
+           via ``get_terminals`` / ``get_nests`` / ``get_map_resources``).
+
+        2. C# IsStructure parity — accept if ``OwnerName`` or
+           ``bHasResetDecayTime`` is set, or if the class name is in the
+           known special list (vehicles, CherufeNest_C).
+
+        3. Tribe-owned fallback — accept if ``TargetingTeam`` is set, the
+           object isn't a creature (no ``DinoID1``) and the class name
+           doesn't match any ``_NON_STRUCTURE_PATTERNS``. This recovers
+           flex pipes / wires (``BP_PipeFlex_*``, ``BP_Wire_Flex_C``) and
+           similar connector segments that don't carry OwnerName but are
+           clearly part of a tribe's build. Without this fallback v3 was
+           dropping ~675 of these per busy PvE map vs the v2 reference.
         """
         cn = obj.class_name
+        # Tier 1: hard exclusions
         if cn == "Structure_LoadoutDummy_Hotbar_C":
             return False
         if cn.startswith("DeathItemCache_"):
             return False
         if obj.get_property_value("IsInCryo"):
             return False
-        # CherufeNest_C is explicitly a structure per the C# rule.
         if cn != "CherufeNest_C" and any(p in cn for p in self._MAP_ELEMENT_PATTERNS):
             return False
+
+        # Tier 2: C# IsStructure parity
         if obj.get_property_value("OwnerName") is not None:
             return True
         if obj.get_property_value("bHasResetDecayTime") is not None:
             return True
-        return cn == "CherufeNest_C" or cn in self._VEHICLE_CLASS_NAMES
+        if cn == "CherufeNest_C" or cn in self._VEHICLE_CLASS_NAMES:
+            return True
+
+        # Tier 3: tribe-owned fallback (flex pipes / wires)
+        if obj.get_property_value("TargetingTeam") is None:
+            return False
+        if obj.get_property_value("DinoID1") is not None:
+            return False
+        if any(pat in cn for pat in self._NON_STRUCTURE_PATTERNS):
+            return False
+        return True
 
     def get_structures(self) -> list[GameObject]:
         """Get all placed structures.

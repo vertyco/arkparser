@@ -304,6 +304,87 @@ class WorldSave:
         """Return creature nest objects (wyvern, drake, etc.)."""
         return self.container.get_nests()
 
+    # Class-name fragments that indicate a creature-storage item. Mirrors
+    # data_models.UploadedItem.is_cryopod (which matches against blueprint
+    # paths); the in-world version matches against the GameObject's
+    # ``class_name`` directly.
+    _CRYOPOD_PATTERNS: t.ClassVar[tuple[str, ...]] = (
+        "Cryopod", "SoulTrap", "Vivarium", "DinoBall",
+    )
+
+    def iter_cryopod_creatures(self) -> t.Iterator[tuple[GameObject, t.Any]]:
+        """Yield ``(item_obj, CryopodCreature)`` for every *filled* cryopod
+        item in the save.
+
+        Why this is needed: when a creature is cryopodded, ARK removes the
+        actor from the world and embeds a serialized snapshot of it into the
+        cryopod item's ``CustomItemDatas``. Standard creature iteration
+        (``get_tamed_creatures``) therefore misses everything in cryo —
+        which on busy PvE servers is the majority of a tribe's roster
+        (e.g. 2,158 of 2,518 on-map tames on the live SE PvE reference).
+        Iterating cryopods here brings them back into view.
+
+        Empty cryopods (no embedded dino) are silently skipped — parsing
+        returns ``None`` for them.
+
+        Yields ``(GameObject, CryopodCreature)`` pairs so the caller can
+        recover the cryopod's owning structure / location if needed.
+        """
+        # Local import: data_models -> game_objects.container -> world_save
+        # would otherwise be a circular import at module-load time.
+        from ..data_models import CryopodCreature
+        from ..common.normalization import (
+            normalize_indexed_data,
+            normalize_indexed_list,
+        )
+
+        for obj in self.container.objects:
+            cn = obj.class_name or ""
+            if not any(p in cn for p in self._CRYOPOD_PATTERNS):
+                continue
+            # In-world cryopod items store their CustomItemDatas directly on
+            # the item's properties (cloud-inventory cryopods wrap them in
+            # ``ArkTributeItem``, but those are handled by
+            # ``UploadedItem.cryopod_creature``).
+            custom_datas_raw = obj.get_property_value("CustomItemDatas")
+            if custom_datas_raw is None:
+                continue
+            custom_datas = normalize_indexed_list(custom_datas_raw)
+            cryo = None
+            for entry in custom_datas:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("CustomDataName") != "Dino":
+                    continue
+                # Byte-blob path (most ASE saves)
+                cryo_bytes_wrapper = normalize_indexed_data(
+                    entry.get("CustomDataBytes", {})
+                )
+                byte_arrays: list[t.Any] = []
+                if isinstance(cryo_bytes_wrapper, dict):
+                    byte_arrays = normalize_indexed_list(
+                        cryo_bytes_wrapper.get("ByteArrays")
+                    )
+                if byte_arrays and isinstance(byte_arrays[0], dict) and "Bytes" in byte_arrays[0]:
+                    cryo = CryopodCreature.from_cryopod_bytes(byte_arrays[0]["Bytes"])
+                    if cryo is not None:
+                        # Supplement with CustomDataStrings/Names when present
+                        # (species + color names live there, not in the blob).
+                        strings = normalize_indexed_list(entry.get("CustomDataStrings"))
+                        if len(strings) > 9 and strings[9]:
+                            cryo.species = strings[9]
+                        color_names = normalize_indexed_list(entry.get("CustomDataNames"))
+                        if color_names:
+                            cryo.color_names = [str(n) for n in color_names]
+                        break
+                # ASA / fallback path (no byte blob, just strings + floats)
+                if entry.get("CustomDataStrings"):
+                    cryo = CryopodCreature.from_asa_cryopod_data(entry)
+                    if cryo is not None:
+                        break
+            if cryo is not None:
+                yield obj, cryo
+
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
