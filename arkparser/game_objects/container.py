@@ -174,6 +174,18 @@ class GameObjectContainer:
         "Nest",
     )
 
+    # Class-name fragments matching placed objects that carry NO properties
+    # at all (no OwnerName, no TargetingTeam, no bHasResetDecayTime — just a
+    # class name + location).  ARK persists flex pipe / flex wire segments
+    # this way (they're graphical connectors between intake/outlet endpoints,
+    # which DO carry properties).  Tier 3a of _is_structure matches against
+    # this list so the segments still count toward the structure list,
+    # mirroring v2 ASVPack behaviour.
+    _PROPERTY_LESS_STRUCTURE_PATTERNS: t.ClassVar[tuple[str, ...]] = (
+        "BP_PipeFlex_",   # BP_PipeFlex_Metal_C, BP_PipeFlex_Stone_C, ...
+        "BP_Wire_Flex_",  # BP_Wire_Flex_C, BP_Wire_Flex_Tek_C, ...
+    )
+
     # Class-name fragments that always disqualify an object from being treated
     # as a structure — even if it carries TargetingTeam. Used by the
     # tribe-owned fallback below to catch flex pipes/wires (which lack
@@ -234,7 +246,20 @@ class GameObjectContainer:
         if cn == "CherufeNest_C" or cn in self._VEHICLE_CLASS_NAMES:
             return True
 
-        # Tier 3: tribe-owned fallback (flex pipes / wires)
+        # Tier 3a: property-less placed segments (flex pipes / flex wires).
+        # These exist as actor GameObjects with a real location but NO
+        # properties at all — ARK persists them as graphical connectors
+        # between intake/outlet endpoints. The C# IsStructure rule misses
+        # them; v2 ASVPack captures them anyway. Class-name match against
+        # ``_PROPERTY_LESS_STRUCTURE_PATTERNS`` recovers them without
+        # sweeping in anything property-bearing.
+        if not getattr(obj, "is_item", False) and any(
+            p in cn for p in self._PROPERTY_LESS_STRUCTURE_PATTERNS
+        ):
+            return True
+
+        # Tier 3b: tribe-owned fallback for property-bearing structures the
+        # canonical C# rule missed (decoration items, etc.).
         if obj.get_property_value("TargetingTeam") is None:
             return False
         if obj.get_property_value("DinoID1") is not None:
