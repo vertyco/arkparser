@@ -670,13 +670,28 @@ class WorldSave:
         _pad1 = reader.read_int32()
         _pad2 = reader.read_int32()
 
-        # Name table (dict keyed by hash for ASA)
+        # Name table (dict keyed by hash for ASA).
+        #
+        # Most ASA saves serialize the table as a flat ``(hash, strlen,
+        # string)`` triple per entry.  Some maps (observed on Ragnarok,
+        # Scorched Earth and TheIsland on busy servers) prepend
+        # user-placed-structure name entries that carry an extra 4-byte
+        # trailer after the string — those entries always have
+        # ``hash == 1`` as a sentinel.  Detect that sentinel per-entry and
+        # consume the trailer so the rest of the table parses normally.
+        # Without this, parsing the next entry's hash misreads the trailer
+        # as a string length and explodes with EndOfDataError on a ~500 MB
+        # phantom string.
         name_count = reader.read_int32()
         nt: dict[int, str] = {}
         for _ in range(name_count):
             idx = reader.read_int32()
             raw = reader.read_string()
             nt[idx] = raw.rsplit(".", 1)[-1] if "." in raw else raw
+            if idx == 1:
+                # User-placed-actor name sentinel: skip the 4-byte sub-id /
+                # trailing tag that follows on these entries.
+                reader.skip(4)
         self.name_table = nt
 
     def _read_asa_actor_locations(self, conn: sqlite3.Connection) -> None:
