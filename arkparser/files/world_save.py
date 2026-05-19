@@ -655,8 +655,13 @@ class WorldSave:
 
         self.version = reader.read_int16()
         _legacy_offset = reader.read_int32()
-        _unknown1 = reader.read_int32()
-        _actual_offset = reader.read_int32()
+        # v14+ adds two int32 fields (unk1, actual_offset) between
+        # legacy_offset and game_time; v13 saves jump straight to game_time.
+        # Without this version gate we mis-align the read by 8 bytes and the
+        # data_files / name_table loops walk into garbage.
+        if self.version >= 14:
+            _unknown1 = reader.read_int32()
+            _actual_offset = reader.read_int32()
         self.game_time = reader.read_double()
         _unknown2 = reader.read_int32()
 
