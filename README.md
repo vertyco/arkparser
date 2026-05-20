@@ -216,6 +216,7 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 | `last_baby_age_update` | added | ISO 8601 datetime of `LastUpdatedBabyAgeAtTime`. |
 | `last_gestation_update` | added | ISO 8601 datetime of `LastUpdatedGestationAtTime`. |
 | `next_cuddle` | added | ISO 8601 datetime of `BabyNextCuddleTime`. |
+| `current_stats` | added | Live in-world stat values from the dino's status component (`CurrentStatusValues[0..11]`) as a `{hp, stam, torp, oxy, food, water, temp, weight, melee, speed, fort, craft}` dict of floats. These are the *current* values (e.g. `hp: 11013.62` = current HP, drops as the dino takes damage). Max values are NOT persisted by ARK — compute downstream from species stat tables + `*-w`/`*-t` points + `imprint` + server multipliers if you need them. `null` when the status component carries no `CurrentStatusValues` entries (e.g. uninitialised baby actor). |
 
 #### `ASV_Wild` schema
 
@@ -233,6 +234,7 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 | `trait` | legacy | first entry of `CreatureTraits` (or empty string) |
 | `traits` | added | full `CreatureTraits` list |
 | `wild_spawn_region` | added | `OriginalNPCVolumeName` — `NPCZoneVolume` the creature spawned in. |
+| `current_stats` | added | Live in-world stat values from the creature's status component (`CurrentStatusValues[0..11]`) as a `{hp, stam, torp, oxy, food, water, temp, weight, melee, speed, fort, craft}` dict of floats. Max values are NOT in the save (would need species stat tables). `null` when uninitialised. |
 
 #### Player data: `.arkprofile` vs in-world pawn
 
@@ -284,6 +286,7 @@ For the richest output, hand `export_players` **both** — assemble a wrapper fo
 | `corpse_destruction` | added | ISO 8601 datetime of `CorpseDestructionTime`. |
 | `chibi_levels` | added | `NumChibiLevelUps` — bonus levels from chibi pets. |
 | `ascensions_scorched` | added | `NumAscensionsScorched` — ASE ascension counter (legacy `ContentPlayer` parses the ASA ascension block differently; this is the ASE-specific field). |
+| `current_stats` | added | Live in-world stat values for the player from the pawn's `MyCharacterStatusComponent` (`CurrentStatusValues[0..11]`) as a `{hp, stam, torp, oxy, food, water, temp, weight, melee, speed, fort, craft}` dict of floats. For profile-sourced records the parser joins on `PlayerDataID == LinkedPlayerDataID` to find the spawned pawn in the world save. `null` when the player has no in-world pawn (never spawned this server / corpse cleared) or the status component has no values — only currently / recently spawned characters have live stats. Max values are NOT persisted by ARK. |
 
 #### `ASV_Tribes` schema
 
