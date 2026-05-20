@@ -216,7 +216,6 @@ __marimo__/
 .streamlit/secrets.toml
 
 # Misc
-*tests/
 references/
 skills/
 copilot-instructions.md

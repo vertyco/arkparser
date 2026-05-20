@@ -22,6 +22,7 @@ ASA World Saves:
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import sqlite3
 import typing as t
@@ -31,12 +32,17 @@ from uuid import UUID
 
 from ..common.binary_reader import BinaryReader
 from ..common.exceptions import ArkParseError
+from ..common.normalization import normalize_indexed_data, normalize_indexed_list
+from ..data_models import CryopodCreature
 from ..game_objects.container import GameObjectContainer
 from ..game_objects.game_object import GameObject
 from ..game_objects.location import LocationData
 from ..properties.registry import read_properties
 
 logger = logging.getLogger(__name__)
+
+# ASE GUIDs are always all-zero; precomputed sentinel skips UUID construction.
+_ZERO_GUID = b"\x00" * 16
 
 
 @dataclass
@@ -131,6 +137,11 @@ class WorldSave:
     name_table: list[str] | dict[int, str] = field(default_factory=list)
     objects: list[GameObject] = field(default_factory=list)
     is_asa: bool = False
+    # Wall-clock mtime of the source .ark file (None when loaded from bytes).
+    # Used to convert in-game ``OriginalCreationTime`` to real timestamps,
+    # matching the legacy ContentContainer.GetApproxDateTimeOf formula:
+    # real = file_mtime + (object_time - game_time).
+    file_mtime: dt.datetime | None = None
 
     # ASE-specific
     embedded_data: list[EmbeddedData] = field(default_factory=list)
@@ -195,11 +206,16 @@ class WorldSave:
         with open(path, "rb") as fh:
             header = fh.read(16)
 
-        if header.startswith(SQLITE_MAGIC):
-            return cls._parse_asa(path, load_properties, max_objects)
+        local_tz = dt.datetime.now().astimezone().tzinfo
+        mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=local_tz)
 
-        reader = BinaryReader.from_file(path)
-        return cls._parse_ase(reader, load_properties)
+        if header.startswith(SQLITE_MAGIC):
+            save = cls._parse_asa(path, load_properties, max_objects)
+        else:
+            reader = BinaryReader.from_file(path)
+            save = cls._parse_ase(reader, load_properties)
+        save.file_mtime = mtime
+        return save
 
     # ------------------------------------------------------------------
     # Convenience queries
@@ -312,32 +328,24 @@ class WorldSave:
         "Cryopod", "SoulTrap", "Vivarium", "DinoBall",
     )
 
-    def iter_cryopod_creatures(self) -> t.Iterator[tuple[GameObject, t.Any]]:
+    def iter_cryopod_creatures(self) -> t.Iterator[tuple[GameObject, CryopodCreature]]:
         """Yield ``(item_obj, CryopodCreature)`` for every *filled* cryopod
         item in the save.
 
         Why this is needed: when a creature is cryopodded, ARK removes the
         actor from the world and embeds a serialized snapshot of it into the
         cryopod item's ``CustomItemDatas``. Standard creature iteration
-        (``get_tamed_creatures``) therefore misses everything in cryo —
+        (``get_tamed_creatures``) therefore misses everything in cryo,
         which on busy PvE servers is the majority of a tribe's roster
         (e.g. 2,158 of 2,518 on-map tames on the live SE PvE reference).
         Iterating cryopods here brings them back into view.
 
-        Empty cryopods (no embedded dino) are silently skipped — parsing
+        Empty cryopods (no embedded dino) are silently skipped; parsing
         returns ``None`` for them.
 
         Yields ``(GameObject, CryopodCreature)`` pairs so the caller can
         recover the cryopod's owning structure / location if needed.
         """
-        # Local import: data_models -> game_objects.container -> world_save
-        # would otherwise be a circular import at module-load time.
-        from ..data_models import CryopodCreature
-        from ..common.normalization import (
-            normalize_indexed_data,
-            normalize_indexed_list,
-        )
-
         for obj in self.container.objects:
             cn = obj.class_name or ""
             if not any(p in cn for p in self._CRYOPOD_PATTERNS):
@@ -544,22 +552,26 @@ class WorldSave:
 
     def _read_ase_name_from_table(self, reader: BinaryReader) -> str:
         """Read a name-table reference (index + instance)."""
-        index = reader.read_int32()
+        index, instance = reader.read_int32_pair()
         internal = index - 1
         nt = self.name_table
         if isinstance(nt, list) and 0 <= internal < len(nt):
             name = nt[internal]
         else:
             name = f"__INVALID_NAME_INDEX_{index}__"
-        instance = reader.read_int32()
         return f"{name}_{instance - 1}" if instance > 0 else name
 
     def _read_ase_object_header(self, reader: BinaryReader, obj_id: int) -> GameObject:
         """Read a single ASE object header."""
         obj = GameObject(id=obj_id)
 
-        guid = reader.read_guid()
-        obj.guid = str(guid) if any(b != 0 for b in guid.bytes) else ""
+        # ASE zero-GUID fast path: skip UUID construction for the common case
+        # where every byte is zero. Saves ~65k UUID() calls per save.
+        guid_bytes = reader.read_bytes(16)
+        if guid_bytes == _ZERO_GUID:
+            obj.guid = ""
+        else:
+            obj.guid = str(UUID(bytes_le=guid_bytes))
 
         if self.version > 5 and isinstance(self.name_table, list) and self.name_table:
             obj.class_name = self._read_ase_name_from_table(reader)
@@ -681,7 +693,7 @@ class WorldSave:
         # string)`` triple per entry.  Some maps (observed on Ragnarok,
         # Scorched Earth and TheIsland on busy servers) prepend
         # user-placed-structure name entries that carry an extra 4-byte
-        # trailer after the string — those entries always have
+        # trailer after the string; those entries always have
         # ``hash == 1`` as a sentinel.  Detect that sentinel per-entry and
         # consume the trailer so the rest of the table parses normally.
         # Without this, parsing the next entry's hash misreads the trailer
@@ -762,29 +774,36 @@ class WorldSave:
         load_properties: bool = True,
     ) -> GameObject:
         """Parse a single ASA game object from its binary blob."""
-        reader = BinaryReader.from_bytes(blob)
+        reader = BinaryReader(blob, save_version=self.version)
         obj = GameObject(id=obj_id, guid=guid_str)
         nt = self.name_table
         assert isinstance(nt, dict)
 
-        # Class name from name-table index
+        # Object layout per AsaSavegameToolkit (legacy C# reference):
+        #   ClassName (name-ref = int32 id + int32 instance)
+        #   IsItem (int32 bool)
+        #   NameCount (int32)
+        #   Names: ReadString() each (v>=13)
+        #   DataFileIndex (int32)
+        #   Trailer skip: 1 byte (v13) / 2 bytes (v14+)
         class_idx = reader.read_int32()
         obj.class_name = nt.get(class_idx, f"__UNKNOWN_CLASS_{class_idx}__")
         _class_inst = reader.read_int32()
-        _zeros = reader.read_int32()
+        obj.is_item = reader.read_int32() != 0
 
-        # Inline names
         name_count = reader.read_int32()
         obj.names = [reader.read_string() for _ in range(name_count)]
-        _end_marker = reader.read_int32()
 
-        # Object type flag
-        if reader.remaining < 2:
-            obj.is_item = False
+        if reader.remaining < 4:
             obj.properties_offset = reader.position
             return obj
+        obj.data_file_index = reader.read_int32()
 
-        obj.is_item = reader.read_uint16() == 1
+        trailer = 2 if self.version >= 14 else 1
+        if reader.remaining < trailer:
+            obj.properties_offset = reader.position
+            return obj
+        reader.skip(trailer)
         obj.properties_offset = reader.position
 
         if load_properties:
