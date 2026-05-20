@@ -119,7 +119,7 @@ def _read_name_from_list_table(reader: BinaryReader, name_table: list[str]) -> s
     Returns:
         The full name string with instance suffix if applicable.
     """
-    index = reader.read_int32()
+    index, instance = reader.read_int32_pair()
 
     # Convert from 1-based to 0-based index
     internal_index = index - 1
@@ -129,9 +129,6 @@ def _read_name_from_list_table(reader: BinaryReader, name_table: list[str]) -> s
         return f"__INVALID_NAME_INDEX_{index}__"
 
     name = name_table[internal_index]
-
-    # Read instance number
-    instance = reader.read_int32()
 
     # Instance 0 means no suffix, otherwise append _{instance-1}
     if instance > 0:
@@ -154,16 +151,13 @@ def _read_name_from_dict_table(reader: BinaryReader, name_table: dict[int, str])
     Returns:
         The full name string with instance suffix if applicable.
     """
-    name_id = reader.read_int32()
+    name_id, instance = reader.read_int32_pair()
 
     if name_id not in name_table:
         # Unknown name - return placeholder
         return f"__UNKNOWN_NAME_{name_id}__"
 
     name = name_table[name_id]
-
-    # Read instance number
-    instance = reader.read_int32()
 
     # Instance 0 means no suffix, otherwise append _{instance-1}
     if instance > 0:
@@ -239,19 +233,25 @@ def read_property_header(
     if worldsave_format:
         return _read_worldsave_property_header(reader, name_table)
 
-    # Read property name
-    name = read_name(reader, name_table)
-
-    # Check for terminator
-    if name == "None" or name == "" or name is None:
-        return None
-
-    # Read property type
-    type_name = read_name(reader, name_table)
+    # Inline name dispatch: branch once on table type, not twice per call.
+    if name_table is None:
+        name = reader.read_string()
+        if name == "None" or name == "":
+            return None
+        type_name = reader.read_string()
+    elif isinstance(name_table, dict):
+        name = _read_name_from_dict_table(reader, name_table)
+        if name == "None":
+            return None
+        type_name = _read_name_from_dict_table(reader, name_table)
+    else:
+        name = _read_name_from_list_table(reader, name_table)
+        if name == "None":
+            return None
+        type_name = _read_name_from_list_table(reader, name_table)
 
     # Both ASE and ASA have data_size and index in the header
-    data_size = reader.read_int32()
-    index = reader.read_int32()
+    data_size, index = reader.read_int32_pair()
 
     return PropertyHeader(
         name=name,
@@ -289,6 +289,11 @@ def _read_worldsave_property_header(
     """
     if name_table is None:
         raise ValueError("WorldSave format requires a name table")
+
+    # Some ASA blobs (header-only objects like AnimSequence) carry no
+    # property block — exit cleanly instead of trying to read past EOF.
+    if reader.remaining < 8:
+        return None
 
     # Read name: ID (4) + Instance (4)
     name_id = reader.read_int32()

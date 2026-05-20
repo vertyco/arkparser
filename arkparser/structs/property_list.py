@@ -39,17 +39,25 @@ class StructPropertyList(Struct):
         return False
 
     def to_dict(self) -> dict[str, t.Any]:
-        """Convert properties to a dictionary."""
+        """Convert properties to a dictionary.
+
+        Single, index-0 properties collapse to a bare value. Anything with a
+        non-zero index or a repeated name surfaces as ``{index: value}`` so
+        indexed-property positions survive the dict round-trip (player
+        level-up stats, for example, are sparse-indexed and would otherwise
+        lose their stat-index mapping).
+        """
         grouped: dict[str, list[Property]] = defaultdict(list)
         for prop in self.properties:
             grouped[prop.name].append(prop)
 
-        return {
-            name: prop_list[0].value
-            if len(prop_list) == 1
-            else {prop.index: prop.value for prop in prop_list}
-            for name, prop_list in grouped.items()
-        }
+        out: dict[str, t.Any] = {}
+        for name, prop_list in grouped.items():
+            if len(prop_list) == 1 and prop_list[0].index == 0:
+                out[name] = prop_list[0].value
+            else:
+                out[name] = {prop.index: prop.value for prop in prop_list}
+        return out
 
     def get_property(self, name: str, index: int = 0) -> Property | None:
         """Get a property by name and optional index."""

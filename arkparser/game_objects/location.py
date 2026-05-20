@@ -14,7 +14,7 @@ if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
 
 
-@dataclass
+@dataclass(slots=True)
 class LocationData:
     """
     Position and rotation data for a game object.

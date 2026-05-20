@@ -241,6 +241,65 @@ class ArrayProperty(Property):
         if name_table is None:
             raise ValueError("WorldSave array format requires a name table")
 
+        # ASA v13 ArrayProperty body layout (per AsaSavegameToolkit):
+        #   dataSize(int32) + position(int32) + arrayType_id(int32) +
+        #   arrayType_inst(int32) + endOfStruct_byte(uint8) + arrayLength(int32)
+        # For struct arrays an additional 49-byte sub-header precedes the
+        # elements (see ReadStructArray). Without the branch, the v14 reader
+        # interprets dataSize as array_header (= massive count) and overruns.
+        if reader.save_version == 13:
+            data_size = reader.read_int32()
+            _position_int = reader.read_int32()
+            element_type_id = reader.read_int32()
+            _element_type_inst = reader.read_int32()
+            element_type = name_table.get(element_type_id, f"__UNKNOWN_{element_type_id}__")
+            _end_of_struct = reader.read_uint8()
+            array_length = reader.read_int32()
+            data_start = reader.position
+            # End-of-array sentinel: dataSize counts the bytes from the count
+            # field forward, so usable data spans data_start .. data_start +
+            # (data_size - 4). We use this as a safety stop to avoid runaway
+            # reads when an element parser drifts.
+            data_end = data_start + max(0, data_size - 4)
+
+            values: list[t.Any] = []
+            struct_type: str | None = None
+
+            if element_type == "StructProperty" and array_length > 0:
+                # ReadStructArray preamble (legacy AsaSavegameToolkit):
+                #   name_ref(8) + type_ref(8) + inner_data_size(4) +
+                #   inner_position(4) + structType_ref(8) + unknown_byte(1) +
+                #   skip(16) = 49 bytes.
+                _arr_name_id = reader.read_int32()
+                _arr_name_inst = reader.read_int32()
+                _arr_type_id = reader.read_int32()
+                _arr_type_inst = reader.read_int32()
+                _inner_data_size = reader.read_int32()
+                _inner_position = reader.read_int32()
+                struct_type_id = reader.read_int32()
+                _struct_type_inst = reader.read_int32()
+                struct_type = name_table.get(struct_type_id, f"__UNKNOWN_{struct_type_id}__")
+                _unknown_byte = reader.read_uint8()
+                reader.skip(16)
+
+                values = _read_worldsave_struct_array_elements(
+                    reader, struct_type, array_length, name_table,
+                )
+            elif array_length > 0:
+                values = _read_worldsave_array_elements(
+                    reader, element_type, array_length, name_table,
+                )
+
+            # Clamp to declared array end if elements undershot or overshot.
+            if reader.position < data_end:
+                reader.position = data_end
+            return cls(
+                name=header.name,
+                index=header.index,
+                array_type=element_type,
+                _values=values,
+            )
+
         # Read array header (should be 1)
         _array_header = reader.read_int32()
 
@@ -869,6 +928,40 @@ class StructProperty(Property):
         if name_table is None:
             raise ValueError("WorldSave struct format requires a name table")
 
+        # ASA v13 StructProperty body layout (per AsaSavegameToolkit):
+        #   dataSize(int32) + position(int32) + structType_id(int32) +
+        #   structType_inst(int32) + position_byte(uint8) + skip(16)
+        # then the struct data. This is materially different from the v14+
+        # nested-name-pair preamble below; without the branch, the v14 reader
+        # consumes ~99 bytes of garbage and overruns the blob.
+        if reader.save_version == 13:
+            data_size = reader.read_int32()
+            _position_int = reader.read_int32()
+            struct_type_id = reader.read_int32()
+            _struct_type_inst = reader.read_int32()
+            struct_type = name_table.get(struct_type_id, f"__UNKNOWN_{struct_type_id}__")
+            _byte_position = reader.read_uint8()
+            reader.skip(16)
+            data_end = reader.position + data_size
+            struct_value = struct_registry.read_struct(
+                reader,
+                struct_type,
+                is_asa=True,
+                has_index_prefix=False,
+                name_table=name_table,
+                worldsave_format=True,
+            )
+            # If the struct reader consumed less than data_size, align to the
+            # declared end. If it overran, trust the reader (best-effort).
+            if reader.position < data_end:
+                reader.position = data_end
+            return cls(
+                name=header.name,
+                index=header.index,
+                struct_type=struct_type,
+                _value=struct_value,
+            )
+
         # Read first struct header: usually 1, sometimes 2+ for structs with extra type refs
         _struct_header1 = reader.read_int32()
 
@@ -1040,6 +1133,39 @@ class MapProperty(Property):
         """
         if name_table is None:
             raise ValueError("WorldSave MapProperty requires a name table")
+
+        # ASA v13 MapProperty body layout (per AsaSavegameToolkit
+        # ReadMapProperty): dataSize(4) + position(4) + keyType_ref(8) +
+        # valueType_ref(8) + byteUnknown(1) + skipCount(4) + mapCount(4)
+        # then entries (each is its own property sub-list terminated by None).
+        # Without this branch the v14 reader interprets dataSize as a marker
+        # and consumes ~40+ extra bytes from the next property.
+        if reader.save_version == 13:
+            data_size = reader.read_int32()
+            _position_int = reader.read_int32()
+            key_type_id = reader.read_int32()
+            _key_type_inst = reader.read_int32()
+            value_type_id = reader.read_int32()
+            _value_type_inst = reader.read_int32()
+            key_type = name_table.get(key_type_id, f"__UNKNOWN_{key_type_id}__")
+            value_type = name_table.get(value_type_id, f"__UNKNOWN_{value_type_id}__")
+            _byte_unknown = reader.read_uint8()
+            _skip_count = reader.read_int32()
+            map_count = reader.read_int32()
+            data_end = reader.position + max(0, data_size - 8)
+            entries: dict[t.Any, t.Any] = {}
+            # Skip body content; full sub-property parsing of map entries is
+            # not implemented but the declared data_size lets us land cleanly
+            # on the next top-level property.
+            if map_count > 0 and reader.position < data_end:
+                reader.position = data_end
+            return cls(
+                name=header.name,
+                index=header.index,
+                key_type=key_type,
+                value_type=value_type,
+                _entries=entries,
+            )
 
         # Read marker (should be 2 for Map: key + value types)
         _marker = reader.read_int32()
