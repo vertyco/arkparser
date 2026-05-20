@@ -445,20 +445,19 @@ class BoolProperty(Property):
         """
         index = header.index
         if worldsave_format:
-            # For BoolProperty, format is: 8 zeros + Length(0) + Flag(=value with potential index)
-            _data_size, flag, arr_index = _read_worldsave_simple_prefix(reader)
-            # For BoolProperty, ANY non-zero flag means true
-            # But if flag & 0x01, the array_index was already read
-            # The true "value" is whether flag was non-zero
-            # Note: flag values like 0x00=false, 0x01=has_index+false, 0x10=true, 0x11=has_index+true
-            # Actually, looking at data: 0x00=false (no index), 0x10=true (no index)
-            # If 0x01: index follows, and value is... hmm
-            # Safest: value = (flag & ~0x01) != 0 or (flag == 0x01 means just has index, value false?)
-            # Actually based on testing: flag=0x00 means false, flag=0x10 means true
-            # flag=0x01 means has_index+false?, flag=0x11 means has_index+true?
-            # Let's use: value = (flag >> 4) != 0  or just value = flag >= 0x10
-            value = (flag & 0x10) != 0  # Bit 4 is the actual bool value
-            index = arr_index
+            if reader.save_version == 13:
+                # ASA v13 BoolProperty body: pad(4) + length(4) + value_int16(2)
+                # per AsaSavegameToolkit (ReadShort). No flag byte / arr_index
+                # variant; index always comes from the header.
+                _pad = reader.read_int32()
+                _length = reader.read_int32()
+                value = reader.read_int16() != 0
+            else:
+                # ASA v14+: pad(4) + length(4) + flag(1) [+ arr_index(4) if flag & 0x01]
+                # Value is encoded in flag bit 4; arr_index supplies array slot.
+                _data_size, flag, arr_index = _read_worldsave_simple_prefix(reader)
+                value = (flag & 0x10) != 0
+                index = arr_index
         elif is_asa:
             extra_byte = reader.read_uint8()
             value = extra_byte != 0

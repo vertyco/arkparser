@@ -107,6 +107,41 @@ class ByteProperty(Property):
         - enum_value (string)
         """
         if worldsave_format:
+            # ASA v13 ByteProperty body layout (per AsaSavegameToolkit):
+            #   dataSize(4) + position(4) + byteType_ref(8) + positionByte(1) +
+            #   value_byte(1) [raw] or value_name_ref(8) [enum]
+            # The v14+ marker-based layout below is incompatible with v13 and
+            # over-reads ~40 bytes when applied to v13 byte enums like
+            # ColorSetIndices, causing cascading desync.
+            if reader.save_version == 13:
+                if not (name_table and isinstance(name_table, dict)):
+                    raise ValueError("v13 ByteProperty requires a name table")
+                _data_size = reader.read_int32()
+                _position_int = reader.read_int32()
+                byte_type_id = reader.read_int32()
+                _byte_type_inst = reader.read_int32()
+                byte_type = name_table.get(byte_type_id, f"__UNKNOWN_{byte_type_id}__")
+                _position_byte = reader.read_uint8()
+                if byte_type == "None":
+                    byte_value = reader.read_uint8()
+                    return cls(
+                        name=header.name,
+                        index=header.index,
+                        enum_name="None",
+                        _byte_value=byte_value,
+                    )
+                enum_value_id = reader.read_int32()
+                enum_value_inst = reader.read_int32()
+                enum_value = name_table.get(enum_value_id, f"__UNKNOWN_{enum_value_id}__")
+                if enum_value_inst > 0:
+                    enum_value = f"{enum_value}_{enum_value_inst - 1}"
+                return cls(
+                    name=header.name,
+                    index=header.index,
+                    enum_name=byte_type,
+                    _enum_value=enum_value,
+                )
+
             # WorldSave ByteProperty has two formats, determined by the first int32
             # after the 16-byte common header:
             #

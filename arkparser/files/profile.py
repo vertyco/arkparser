@@ -191,6 +191,23 @@ class Profile(ArkFile):
         return self._persistent_stats.get("CharacterStatusComponent_ExperiencePoints", 0.0) or 0.0
 
     @property
+    def last_login_time(self) -> float | None:
+        """In-game seconds when this player last logged in.
+
+        Read from ``LastLoginTime`` on the profile's ``MyData`` struct.
+        Returns ``None`` when the field is absent. Combine with a
+        ``WorldSave``'s ``file_mtime`` + ``game_time`` to convert to a real
+        wall-clock datetime.
+        """
+        val = self._player_data.get("LastLoginTime")
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    @property
     def total_engram_points(self) -> int:
         """Get total engram points spent."""
         return self._persistent_stats.get("PlayerState_TotalEngramPoints", 0) or 0
@@ -229,7 +246,12 @@ class Profile(ArkFile):
         points_key = "CharacterStatusComponent_NumberOfLevelUpPointsApplied"
         points_value = stats.get(points_key)
 
-        if isinstance(points_value, list):
+        if isinstance(points_value, dict):
+            # Sparse indexed dict (preserved by normalize). Lookup by index.
+            raw_value = points_value.get(stat_index)
+            if isinstance(raw_value, int):
+                added = raw_value
+        elif isinstance(points_value, list):
             if 0 <= stat_index < len(points_value):
                 raw_value = points_value[stat_index]
                 if isinstance(raw_value, int):

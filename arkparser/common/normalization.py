@@ -27,12 +27,24 @@ def normalize_indexed_data(value: t.Any) -> t.Any:
     if not isinstance(value, dict):
         return value
 
-    normalized_items = [(key, normalize_indexed_data(item)) for key, item in value.items()]
-    if normalized_items and all(isinstance(key, int) for key, _ in normalized_items):
-        normalized_values = [item for _, item in normalized_items]
-        return normalized_values[0] if len(normalized_values) == 1 else normalized_values
+    all_int = True
+    out: dict[t.Any, t.Any] = {}
+    for key, item in value.items():
+        out[key] = normalize_indexed_data(item)
+        if all_int and not isinstance(key, int):
+            all_int = False
 
-    return {key: item for key, item in normalized_items}
+    if not out or not all_int:
+        return out
+
+    # All-int-keyed dicts represent indexed-property entries. Collapse to a
+    # flat list only when keys form contiguous 0..n; sparse indices must keep
+    # dict shape so callers can look up by stat index, not list position.
+    n = len(out)
+    if min(out) == 0 and max(out) == n - 1:
+        values = list(out.values())
+        return values[0] if n == 1 else values
+    return out
 
 
 def normalize_indexed_list(value: t.Any) -> list[t.Any]:

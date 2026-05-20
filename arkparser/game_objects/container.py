@@ -175,7 +175,7 @@ class GameObjectContainer:
     )
 
     # Class-name fragments matching placed objects that carry NO properties
-    # at all (no OwnerName, no TargetingTeam, no bHasResetDecayTime — just a
+    # at all (no OwnerName, no TargetingTeam, no bHasResetDecayTime, just a
     # class name + location).  ARK persists flex pipe / flex wire segments
     # this way (they're graphical connectors between intake/outlet endpoints,
     # which DO carry properties).  Tier 3a of _is_structure matches against
@@ -187,7 +187,7 @@ class GameObjectContainer:
     )
 
     # Class-name fragments that always disqualify an object from being treated
-    # as a structure — even if it carries TargetingTeam. Used by the
+    # as a structure, even if it carries TargetingTeam. Used by the
     # tribe-owned fallback below to catch flex pipes/wires (which lack
     # OwnerName/bHasResetDecayTime) without sweeping in creatures, items,
     # buffs, etc.
@@ -215,11 +215,11 @@ class GameObjectContainer:
            objects, and environmental map elements (which surface separately
            via ``get_terminals`` / ``get_nests`` / ``get_map_resources``).
 
-        2. C# IsStructure parity — accept if ``OwnerName`` or
+        2. C# IsStructure parity: accept if ``OwnerName`` or
            ``bHasResetDecayTime`` is set, or if the class name is in the
            known special list (vehicles, CherufeNest_C).
 
-        3. Tribe-owned fallback — accept if ``TargetingTeam`` is set, the
+        3. Tribe-owned fallback: accept if ``TargetingTeam`` is set, the
            object isn't a creature (no ``DinoID1``) and the class name
            doesn't match any ``_NON_STRUCTURE_PATTERNS``. This recovers
            flex pipes / wires (``BP_PipeFlex_*``, ``BP_Wire_Flex_C``) and
@@ -248,7 +248,7 @@ class GameObjectContainer:
 
         # Tier 3a: property-less placed segments (flex pipes / flex wires).
         # These exist as actor GameObjects with a real location but NO
-        # properties at all — ARK persists them as graphical connectors
+        # properties at all. ARK persists them as graphical connectors
         # between intake/outlet endpoints. The C# IsStructure rule misses
         # them; v2 ASVPack captures them anyway. Class-name match against
         # ``_PROPERTY_LESS_STRUCTURE_PATTERNS`` recovers them without
