@@ -20,7 +20,7 @@ if t.TYPE_CHECKING:
     from ..properties.base import Property
 
 
-@dataclass
+@dataclass(slots=True)
 class GameObject:
     """
     A game object from an ARK save file.
@@ -58,6 +58,21 @@ class GameObject:
     parent: GameObject | None = field(default=None, repr=False)
     components: dict[str, GameObject] = field(default_factory=dict, repr=False)
 
+    # Lazy property index: name -> {index: Property}. Built on first lookup,
+    # invalidated by setting to None when properties is mutated.
+    _prop_index: dict[str, dict[int, "Property"]] | None = field(default=None, repr=False, compare=False)
+
+    def _build_prop_index(self) -> dict[str, dict[int, "Property"]]:
+        idx: dict[str, dict[int, "Property"]] = {}
+        for prop in self.properties:
+            bucket = idx.get(prop.name)
+            if bucket is None:
+                idx[prop.name] = {prop.index: prop}
+            else:
+                bucket.setdefault(prop.index, prop)
+        self._prop_index = idx
+        return idx
+
     @property
     def has_location(self) -> bool:
         """True if this object has location data."""
@@ -79,44 +94,30 @@ class GameObject:
         return len(self.names) > 1
 
     def get_property(self, name: str, index: int | None = None) -> Property | None:
-        """
-        Get a property by name and optional index.
-
-        Args:
-            name: Property name to find.
-            index: Property index (for arrays with same name). If None, returns first match.
-
-        Returns:
-            The Property object, or None if not found.
-        """
-        for prop in self.properties:
-            if prop.name == name:
-                if index is None or prop.index == index:
-                    return prop
-        return None
+        """Get a property by name and optional index (None = first by insertion)."""
+        idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
+        bucket = idx.get(name)
+        if not bucket:
+            return None
+        if index is None:
+            return next(iter(bucket.values()))
+        return bucket.get(index)
 
     def get_property_value(self, name: str, default: t.Any = None, index: int | None = None) -> t.Any:
-        """
-        Get a property value by name.
-
-        Args:
-            name: Property name to find.
-            default: Default value if property not found.
-            index: Property index (for arrays with same name). If None, returns first match.
-
-        Returns:
-            The property value, or the default if not found.
-        """
+        """Get a property value by name (returns default if missing)."""
         prop = self.get_property(name, index)
         return prop.value if prop is not None else default
 
     def get_properties_by_name(self, name: str) -> list[Property]:
         """Get all properties with the given name (any index)."""
-        return [p for p in self.properties if p.name == name]
+        idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
+        bucket = idx.get(name)
+        return list(bucket.values()) if bucket else []
 
     def has_property(self, name: str) -> bool:
         """Check if this object has a property with the given name."""
-        return any(p.name == name for p in self.properties)
+        idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
+        return name in idx
 
     # Normalized component key names: maps UE4 dynamic blueprint names
     # (e.g. DinoCharacterStatus_BP_Rex_C1) to stable consumer-friendly keys.
@@ -228,13 +229,9 @@ class GameObject:
         if props:
             result["properties"] = props
 
-        # Flatten components to just their property dicts: the component's
-        # own id / class_name / names are internal plumbing consumers don't need.
-        # Dynamic UE4 component names (e.g. DinoCharacterStatus_BP_Rex_C1)
-        # are normalized to fixed keys so consumers don't need pattern matching.
         if self.components:
             result["components"] = {
-                self._normalize_component_name(name): comp._serialize_properties()
+                name: comp._serialize_properties()
                 for name, comp in self.components.items()
             }
 
@@ -343,6 +340,8 @@ class GameObject:
 
             self.properties = properties
 
+        self._prop_index = None
+
         # Any remaining data before next object is extra data
         if next_object is not None:
             next_offset = properties_block_offset + next_object.properties_offset
@@ -351,9 +350,10 @@ class GameObject:
                 self.extra_data = reader.read_bytes(remaining)
 
     def add_component(self, component: GameObject) -> None:
-        """Add a component to this object."""
+        """Add a component to this object under its normalized key."""
         if component.primary_name:
-            self.components[component.primary_name] = component
+            key = self._normalize_component_name(component.primary_name)
+            self.components[key] = component
             component.parent = self
 
 

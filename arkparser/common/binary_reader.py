@@ -1,89 +1,69 @@
 """
 Binary Reader - Low-level binary reading utilities.
 
-ARK save files are binary and use little-endian byte order throughout.
-This module provides a simple interface for reading all the primitive
-types found in ARK files.
+ARK save files are binary and use little-endian byte order throughout. This
+module provides a fast interface for reading the primitive types used in
+ARK saves.
 
-Binary Format Basics:
-    - All integers are little-endian
-    - Strings are length-prefixed (negative length = UTF-16)
-    - GUIDs are 16 bytes, read as little-endian
+Implementation note:
+    The reader operates on a single ``bytes`` buffer with an integer position
+    cursor instead of a ``BytesIO`` stream. Integer reads use ``int.from_bytes``
+    (significantly faster than ``struct.unpack`` for ints) and float reads
+    use pre-instantiated ``struct.Struct`` unpackers. On a ~80k-object ASE
+    save this cuts load time roughly in half compared to the BytesIO-based
+    implementation.
 
 Example:
     >>> reader = BinaryReader.from_file("save.ark")
     >>> version = reader.read_int32()
     >>> name = reader.read_string()
-    >>> reader.close()
-
-    # Or use as context manager:
-    >>> with BinaryReader.from_file("save.ark") as reader:
-    ...     version = reader.read_int32()
 """
 
 from __future__ import annotations
 
 import struct
 import typing as t
-from io import BytesIO
 from pathlib import Path
 from uuid import UUID
 
 from .exceptions import EndOfDataError
 
+# Pre-instantiated struct unpackers (faster than struct.unpack with a format
+# string each call. The Struct objects compile the format once.
+_S_FLOAT = struct.Struct("<f")
+_S_DOUBLE = struct.Struct("<d")
+_S_INT32_PAIR = struct.Struct("<ii")
+
 
 class BinaryReader:
-    """
-    Binary data reader for ARK save files.
+    """Binary data reader for ARK save files (little-endian)."""
 
-    All ARK files use little-endian byte order. This class provides
-    methods for reading all primitive types used in the format.
+    __slots__ = ("_buf", "_pos", "_size", "save_version")
 
-    The reader tracks its position and supports slicing to create
-    sub-readers for parsing nested structures.
-
-    Attributes:
-        position: Current read position in bytes.
-        size: Total size of the data in bytes.
-        remaining: Number of bytes left to read.
-    """
-
-    # Struct format characters (little-endian)
-    _FMT_INT8 = "<b"
-    _FMT_UINT8 = "<B"
-    _FMT_INT16 = "<h"
-    _FMT_UINT16 = "<H"
-    _FMT_INT32 = "<i"
-    _FMT_UINT32 = "<I"
-    _FMT_INT64 = "<q"
-    _FMT_UINT64 = "<Q"
-    _FMT_FLOAT = "<f"
-    _FMT_DOUBLE = "<d"
-
-    def __init__(self, stream: t.BinaryIO) -> None:
-        """
-        Initialize with a binary stream.
-
-        Args:
-            stream: A binary file-like object supporting read/seek/tell.
-        """
-        self._stream = stream
-        # Determine size by seeking to end
-        self._stream.seek(0, 2)
-        self._size = self._stream.tell()
-        self._stream.seek(0)
+    def __init__(self, data: bytes | memoryview, save_version: int = 0) -> None:
+        # Materialize to bytes once. CPython 3.14 small-bytes slicing is
+        # significantly faster than memoryview slicing for the per-read
+        # ``int.from_bytes(buf[a:b], ...)`` hot path used here.
+        if isinstance(data, memoryview):
+            self._buf = bytes(data)
+        else:
+            self._buf = data
+        self._pos = 0
+        self._size = len(self._buf)
+        # Save format version. Propagated from WorldSave so property readers
+        # can branch on version-specific layout quirks (e.g. ASA v13
+        # BoolProperty bodies carry an extra trailing byte vs v14+).
+        self.save_version = save_version
 
     def __enter__(self) -> BinaryReader:
-        """Context manager entry."""
         return self
 
     def __exit__(self, *args: object) -> None:
-        """Context manager exit - closes the stream."""
         self.close()
 
     def close(self) -> None:
-        """Close the underlying stream."""
-        self._stream.close()
+        # Nothing to release; underlying buffer is plain bytes.
+        return None
 
     # =========================================================================
     # Factory Methods
@@ -91,32 +71,11 @@ class BinaryReader:
 
     @classmethod
     def from_file(cls, path: str | Path) -> BinaryReader:
-        """
-        Create a reader from a file path.
-
-        The entire file is read into memory for faster access.
-
-        Args:
-            path: Path to the binary file.
-
-        Returns:
-            A new BinaryReader instance.
-        """
-        data = Path(path).read_bytes()
-        return cls(BytesIO(data))
+        return cls(Path(path).read_bytes())
 
     @classmethod
     def from_bytes(cls, data: bytes) -> BinaryReader:
-        """
-        Create a reader from raw bytes.
-
-        Args:
-            data: Raw bytes to read from.
-
-        Returns:
-            A new BinaryReader instance.
-        """
-        return cls(BytesIO(data))
+        return cls(bytes(data) if not isinstance(data, bytes) else data)
 
     # =========================================================================
     # Position Management
@@ -124,164 +83,153 @@ class BinaryReader:
 
     @property
     def position(self) -> int:
-        """Current read position in the stream (0-indexed)."""
-        return self._stream.tell()
+        return self._pos
 
     @position.setter
     def position(self, value: int) -> None:
-        """
-        Set the read position.
-
-        Args:
-            value: New position (0-indexed byte offset).
-        """
-        self._stream.seek(value)
+        if value < 0 or value > self._size:
+            raise EndOfDataError(value, self._size)
+        self._pos = value
 
     @property
     def size(self) -> int:
-        """Total size of the data in bytes."""
         return self._size
 
     @property
     def remaining(self) -> int:
-        """Number of bytes remaining to read."""
-        return self._size - self.position
+        return self._size - self._pos
 
     def skip(self, count: int) -> None:
-        """
-        Skip forward by the specified number of bytes.
-
-        Args:
-            count: Number of bytes to skip (can be negative to go back).
-        """
-        self._stream.seek(count, 1)  # SEEK_CUR
+        new_pos = self._pos + count
+        if new_pos < 0 or new_pos > self._size:
+            raise EndOfDataError(count, self._size - self._pos)
+        self._pos = new_pos
 
     def slice(self, size: int) -> BinaryReader:
-        """
-        Create a sub-reader for the next `size` bytes.
-
-        This reads `size` bytes from the current position and returns
-        a new BinaryReader for just those bytes. The original reader's
-        position advances past the sliced region.
-
-        Useful for parsing nested structures with known sizes.
-
-        Args:
-            size: Number of bytes to slice.
-
-        Returns:
-            A new BinaryReader for the sliced bytes.
-
-        Raises:
-            EndOfDataError: If not enough bytes remain.
-        """
-        if size > self.remaining:
-            raise EndOfDataError(size, self.remaining)
-        data = self._stream.read(size)
-        return BinaryReader.from_bytes(data)
+        if size > self._size - self._pos:
+            raise EndOfDataError(size, self._size - self._pos)
+        sub = self._buf[self._pos:self._pos + size]
+        self._pos += size
+        return BinaryReader(sub)
 
     # =========================================================================
     # Raw Bytes
     # =========================================================================
 
     def read_bytes(self, count: int) -> bytes:
-        """
-        Read raw bytes from the stream.
-
-        Args:
-            count: Number of bytes to read.
-
-        Returns:
-            The raw bytes.
-
-        Raises:
-            EndOfDataError: If not enough bytes remain.
-        """
-        if count > self.remaining:
-            raise EndOfDataError(count, self.remaining)
-        return self._stream.read(count)
-
-    def _unpack(self, fmt: str, size: int) -> t.Any:
-        """Read and unpack a fixed-size primitive value."""
-        return struct.unpack(fmt, self.read_bytes(size))[0]
+        end = self._pos + count
+        if end > self._size:
+            raise EndOfDataError(count, self._size - self._pos)
+        data = self._buf[self._pos:end]
+        self._pos = end
+        return data
 
     # =========================================================================
     # Integer Types
+    #
+    # int.from_bytes is markedly faster than struct.unpack for fixed-width
+    # ints in CPython. Each reader inlines the bounds check so the hot path
+    # is a single comparison + slice + int.from_bytes call.
     # =========================================================================
 
     def read_int8(self) -> int:
-        """Read a signed 8-bit integer (-128 to 127)."""
-        return self._unpack(self._FMT_INT8, 1)
+        if self._pos >= self._size:
+            raise EndOfDataError(1, self._size - self._pos)
+        v = self._buf[self._pos]
+        self._pos += 1
+        return v - 256 if v >= 128 else v
 
     def read_uint8(self) -> int:
-        """Read an unsigned 8-bit integer (0 to 255)."""
-        return self._unpack(self._FMT_UINT8, 1)
+        if self._pos >= self._size:
+            raise EndOfDataError(1, self._size - self._pos)
+        v = self._buf[self._pos]
+        self._pos += 1
+        return v
 
     def read_int16(self) -> int:
-        """Read a signed 16-bit integer."""
-        return self._unpack(self._FMT_INT16, 2)
+        if self._pos + 2 > self._size:
+            raise EndOfDataError(2, self._size - self._pos)
+        v = int.from_bytes(self._buf[self._pos:self._pos + 2], "little", signed=True)
+        self._pos += 2
+        return v
 
     def read_uint16(self) -> int:
-        """Read an unsigned 16-bit integer."""
-        return self._unpack(self._FMT_UINT16, 2)
+        if self._pos + 2 > self._size:
+            raise EndOfDataError(2, self._size - self._pos)
+        v = int.from_bytes(self._buf[self._pos:self._pos + 2], "little")
+        self._pos += 2
+        return v
 
     def read_int32(self) -> int:
-        """Read a signed 32-bit integer."""
-        return self._unpack(self._FMT_INT32, 4)
+        if self._pos + 4 > self._size:
+            raise EndOfDataError(4, self._size - self._pos)
+        v = int.from_bytes(self._buf[self._pos:self._pos + 4], "little", signed=True)
+        self._pos += 4
+        return v
 
     def read_uint32(self) -> int:
-        """Read an unsigned 32-bit integer."""
-        return self._unpack(self._FMT_UINT32, 4)
+        if self._pos + 4 > self._size:
+            raise EndOfDataError(4, self._size - self._pos)
+        v = int.from_bytes(self._buf[self._pos:self._pos + 4], "little")
+        self._pos += 4
+        return v
 
     def read_int64(self) -> int:
-        """Read a signed 64-bit integer."""
-        return self._unpack(self._FMT_INT64, 8)
+        if self._pos + 8 > self._size:
+            raise EndOfDataError(8, self._size - self._pos)
+        v = int.from_bytes(self._buf[self._pos:self._pos + 8], "little", signed=True)
+        self._pos += 8
+        return v
 
     def read_uint64(self) -> int:
-        """Read an unsigned 64-bit integer."""
-        return self._unpack(self._FMT_UINT64, 8)
+        if self._pos + 8 > self._size:
+            raise EndOfDataError(8, self._size - self._pos)
+        v = int.from_bytes(self._buf[self._pos:self._pos + 8], "little")
+        self._pos += 8
+        return v
+
+    def read_int32_pair(self) -> tuple[int, int]:
+        """Read two signed int32 values in a single struct unpack call.
+
+        Hot path for property headers (data_size + index) and ASE name-table
+        references (index + instance). One Python call + one C unpack beats
+        two read_int32 calls.
+        """
+        if self._pos + 8 > self._size:
+            raise EndOfDataError(8, self._size - self._pos)
+        a, b = _S_INT32_PAIR.unpack_from(self._buf, self._pos)
+        self._pos += 8
+        return a, b
 
     # =========================================================================
     # Floating Point Types
     # =========================================================================
 
     def read_float(self) -> float:
-        """Read a 32-bit IEEE 754 float."""
-        return self._unpack(self._FMT_FLOAT, 4)
+        if self._pos + 4 > self._size:
+            raise EndOfDataError(4, self._size - self._pos)
+        v = _S_FLOAT.unpack_from(self._buf, self._pos)[0]
+        self._pos += 4
+        return v
 
     def read_double(self) -> float:
-        """Read a 64-bit IEEE 754 double."""
-        return self._unpack(self._FMT_DOUBLE, 8)
+        if self._pos + 8 > self._size:
+            raise EndOfDataError(8, self._size - self._pos)
+        v = _S_DOUBLE.unpack_from(self._buf, self._pos)[0]
+        self._pos += 8
+        return v
 
     # =========================================================================
     # Boolean
     # =========================================================================
 
     def read_bool32(self) -> bool:
-        """
-        Read a boolean stored as a 32-bit integer.
-
-        This is how booleans are stored outside of BoolProperty in ASE.
-        Returns True if the value is non-zero.
-        """
         return self.read_uint32() != 0
 
     def read_bool16(self) -> bool:
-        """
-        Read a boolean stored as a 16-bit integer.
-
-        This is how BoolProperty values are stored in ASA.
-        Returns True if the value is non-zero.
-        """
         return self.read_int16() != 0
 
     def read_bool8(self) -> bool:
-        """
-        Read a boolean stored as an 8-bit integer.
-
-        This is how BoolProperty values are stored in ASE.
-        Returns True if the value is non-zero.
-        """
         return self.read_uint8() != 0
 
     # =========================================================================
@@ -289,72 +237,39 @@ class BinaryReader:
     # =========================================================================
 
     def read_string(self) -> str:
-        """
-        Read a length-prefixed string.
-
-        ARK string format:
-            - Int32 length (negative = UTF-16, positive = Latin-1/ASCII)
-            - String bytes including null terminator
-
-        Special cases:
-            - length = 0: Returns empty string
-            - length = 1: Single null byte, returns empty string
-            - length = -1: UTF-16 null (2 bytes), returns empty string
-
-        Returns:
-            The decoded string (without null terminator).
-        """
+        """Read a length-prefixed string (negative length = UTF-16)."""
         length = self.read_int32()
-
-        # Handle special cases
         if length == 0:
             return ""
         if length == 1:
-            self.skip(1)  # Skip single null byte
+            self._pos += 1  # single null byte
             return ""
         if length == -1:
-            self.skip(2)  # Skip UTF-16 null (2 bytes)
+            self._pos += 2  # UTF-16 null
             return ""
-
-        # Determine encoding based on sign
         if length < 0:
-            # UTF-16 (multibyte) - common for non-ASCII characters
-            byte_count = abs(length) * 2
-            data = self.read_bytes(byte_count)
-            # Exclude null terminator (2 bytes for UTF-16)
-            return data[:-2].decode("utf-16-le")
-        else:
-            # Latin-1 (single byte) - most common
-            data = self.read_bytes(length)
-            # Exclude null terminator (1 byte)
-            return data[:-1].decode("latin-1")
+            byte_count = -length * 2
+            end = self._pos + byte_count
+            if end > self._size:
+                raise EndOfDataError(byte_count, self._size - self._pos)
+            data = self._buf[self._pos:end - 2]  # exclude null terminator
+            self._pos = end
+            return data.decode("utf-16-le")
+        end = self._pos + length
+        if end > self._size:
+            raise EndOfDataError(length, self._size - self._pos)
+        data = self._buf[self._pos:end - 1]  # exclude null terminator
+        self._pos = end
+        return data.decode("latin-1")
 
     # =========================================================================
     # GUID (ASA)
     # =========================================================================
 
     def read_guid(self) -> UUID:
-        """
-        Read a 16-byte GUID (UUID).
-
-        GUIDs in ARK are stored in little-endian format.
-        Used primarily in ASA for object identification.
-
-        Returns:
-            A UUID object.
-        """
-        guid_bytes = self.read_bytes(16)
-        return UUID(bytes_le=guid_bytes)
+        return UUID(bytes_le=self.read_bytes(16))
 
     def read_guid_bytes(self) -> bytes:
-        """
-        Read a 16-byte GUID as raw bytes.
-
-        Useful when you just need to check if a GUID is all zeros.
-
-        Returns:
-            The raw 16 GUID bytes.
-        """
         return self.read_bytes(16)
 
     # =========================================================================
@@ -362,45 +277,14 @@ class BinaryReader:
     # =========================================================================
 
     def peek_bytes(self, count: int) -> bytes:
-        """
-        Peek at the next bytes without advancing position.
-
-        Useful for debugging or format detection.
-
-        Args:
-            count: Number of bytes to peek.
-
-        Returns:
-            The bytes (position unchanged).
-        """
-        pos = self.position
-        data = self.read_bytes(min(count, self.remaining))
-        self.position = pos
-        return data
+        end = min(self._pos + count, self._size)
+        return self._buf[self._pos:end]
 
     def debug_context(self, before: int = 16, after: int = 16) -> str:
-        """
-        Get a hex dump of bytes around the current position.
-
-        Useful for debugging parse errors.
-
-        Args:
-            before: Bytes to show before current position.
-            after: Bytes to show after current position.
-
-        Returns:
-            Formatted hex dump string.
-        """
-        start = max(0, self.position - before)
-        end = min(self.size, self.position + after)
-
-        self._stream.seek(start)
-        data = self._stream.read(end - start)
-        self._stream.seek(self.position)  # Restore position
-
-        # Format as hex with position marker
+        start = max(0, self._pos - before)
+        end = min(self._size, self._pos + after)
+        data = self._buf[start:end]
         hex_str = data.hex(" ")
-        marker_pos = (self.position - start) * 3  # 2 hex chars + 1 space per byte
+        marker_pos = (self._pos - start) * 3
         marker = " " * marker_pos + "^"
-
-        return f"Position 0x{self.position:X}:\n{hex_str}\n{marker}"
+        return f"Position 0x{self._pos:X}:\n{hex_str}\n{marker}"
