@@ -89,12 +89,22 @@ class PropertyHeader:
 
     This is used internally during parsing to pass header
     information to property constructors.
+
+    ``index`` carries the per-property array index (ASE: read from header,
+    ASA: always 0 - the second int32 in ASA headers is a position marker,
+    not an array index. AsaPropertyRegistry.cs treats it as a separate
+    ``position`` field; we expose it as ``position`` below).
+
+    ``position`` is the raw second-int32 field from ASA property headers
+    (some property types repurpose it - e.g. ByteProperty uses it as the
+    enum-name length discriminator).
     """
 
     name: str
     type_name: str
     data_size: int
     index: int
+    position: int = 0
 
     def __repr__(self) -> str:
         return f"PropertyHeader(name={self.name!r}, type={self.type_name!r}, size={self.data_size}, index={self.index})"
@@ -250,15 +260,13 @@ def read_property_header(
             return None
         type_name = _read_name_from_list_table(reader, name_table)
 
-    # Both ASE and ASA have data_size and index in the header
-    data_size, index = reader.read_int32_pair()
-
-    return PropertyHeader(
-        name=name,
-        type_name=type_name,
-        data_size=data_size,
-        index=index,
-    )
+    # Both ASE and ASA write data_size + an int32 here, but ASA's int32 is a
+    # "position" field (per AsaPropertyRegistry.cs), not an array index.
+    # ASA arrays come back via the extra_byte branch on each property type.
+    data_size, raw = reader.read_int32_pair()
+    if is_asa:
+        return PropertyHeader(name=name, type_name=type_name, data_size=data_size, index=0, position=raw)
+    return PropertyHeader(name=name, type_name=type_name, data_size=data_size, index=raw, position=0)
 
 
 def _read_worldsave_property_header(

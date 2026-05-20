@@ -197,10 +197,11 @@ class ByteProperty(Property):
                     _enum_value=enum_value,
                 )
         elif is_asa:
-            # For ASA, header.index indicates the type:
-            # - index == 1: raw byte (no enum_name)
-            # - index > 1: enum type name length (null-terminated string)
-            enum_name_len = header.index
+            # For ASA, header.position (the second int32 from the file header,
+            # NOT an array index) discriminates the layout:
+            # - position == 1: raw byte (no enum_name)
+            # - position > 1: enum type name length (null-terminated string)
+            enum_name_len = header.position
 
             if enum_name_len == 1:
                 # Raw byte value - no enum_name at all

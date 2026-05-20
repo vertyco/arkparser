@@ -666,9 +666,9 @@ class ObjectProperty(Property):
                 index = reader.read_int32()
             exists_flag = reader.read_int32()
 
-            # In ASA, use header.index as the data size indicator
-            # If data_size is 0, check index instead
-            data_size = header.index if header.data_size == 0 else header.data_size
+            # In ASA, header.position (the second int32 from the header) is
+            # repurposed to carry the data size when header.data_size==0.
+            data_size = header.position if header.data_size == 0 else header.data_size
 
             if exists_flag == 1:
                 # Check if there's more data after exists_flag
