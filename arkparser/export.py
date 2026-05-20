@@ -203,6 +203,57 @@ def _stat_array(status: t.Any, prop_name: str) -> list[int]:
     return out
 
 
+def _current_stat_floats(status: t.Any) -> list[float] | None:
+    """Read ``CurrentStatusValues[0..11]`` from a character status component.
+
+    Status components persist the live in-world values of all 12 stats. The
+    array is indexed by ARK's ``EPrimalCharacterStatusValue`` enum:
+    0=hp, 1=stam, 2=torpor, 3=oxy, 4=food, 5=water, 6=temp, 7=weight,
+    8=melee, 9=speed, 10=temp-fortitude, 11=crafting.
+
+    Returns ``None`` when the status component is missing or carries no
+    CurrentStatusValues entries (e.g. uninitialised baby actor) so callers
+    can distinguish "no data" from "all zeros".
+    """
+    if status is None:
+        return None
+    out: list[float] = [0.0] * 12
+    seen = False
+    getter = getattr(status, "get_properties_by_name", None)
+    if callable(getter):
+        # Real GameObject: get_properties_by_name surfaces every indexed
+        # entry. Empty result == component carries no CurrentStatusValues
+        # at all (uninitialised); return None so callers can distinguish
+        # "no data" from "all zeros".
+        for prop in getter("CurrentStatusValues"):
+            idx = getattr(prop, "index", 0)
+            if 0 <= idx < 12:
+                out[idx] = _float(getattr(prop, "value", 0.0))
+                seen = True
+        return out if seen else None
+    # Synthetic / cryopod stand-in: per-index get_property_value lookups.
+    for i in range(12):
+        val = _prop(status, "CurrentStatusValues", default=None, index=i)
+        if val is not None:
+            out[i] = _float(val)
+            seen = True
+    return out if seen else None
+
+
+def _current_stats_dict(status: t.Any) -> dict[str, float] | None:
+    """Return current stat values keyed by short stat name.
+
+    Pre-conditions: ``status`` is the character status component (creature or
+    player). May be ``None`` (e.g. offline player with no spawned pawn).
+    Post-conditions: returns a dict ``{hp, stam, ..., craft}`` of floats, or
+    ``None`` when no CurrentStatusValues are persisted on the component.
+    """
+    floats = _current_stat_floats(status)
+    if floats is None:
+        return None
+    return {_STAT_NAMES[i]: floats[i] for i in range(12)}
+
+
 def _flat_stats(points: list[int], suffix: str = "") -> dict[str, int]:
     """Emit all 12 stats as a flat dict.
 
@@ -674,6 +725,7 @@ def _tamed_dict(
             )) is not None
             else None
         ),
+        "current_stats": _current_stats_dict(status),
         "imprinter_player_id": _int(_prop(obj, "ImprinterPlayerDataID")),
         "imprinter_net_id": _str(_prop(obj, "ImprinterPlayerUniqueNetId")),
         "taming_team_id": _int(_prop(obj, "TamingTeamID")),
@@ -870,6 +922,7 @@ def _wild_dict(
         # CreatureTraits list is exposed alongside as ``traits``.
         "trait": traits[0] if traits else "",
         "traits": traits,
+        "current_stats": _current_stats_dict(status),
         "wild_spawn_region": _str(_prop(obj, "OriginalNPCVolumeName")),
     }
     data.update(_gps_payload(obj, map_config))
@@ -882,12 +935,23 @@ def export_wild(save: t.Any, map_config: MapConfig | None = None) -> list[dict[s
     return [_wild_dict(obj, _status_for(obj, lookup), map_config) for obj in objects]
 
 
-def _player_from_profile(profile: Profile, save: t.Any = None) -> dict[str, t.Any]:
+def _player_from_profile(
+    profile: Profile,
+    save: t.Any = None,
+    pawn_status_by_id: dict[int, t.Any] | None = None,
+) -> dict[str, t.Any]:
     stat_points = [_int(profile.get_stat(i)["added"]) for i in range(12)]
     gamertag = profile.player_name or ""
     character = profile.character_name or gamertag
     steam_id = profile.unique_id or ""
     active_dt = _approx_real_datetime(profile.last_login_time, save)
+
+    # Live HP/stam/etc live on the player's in-world pawn's status component,
+    # not in the profile. Resolve via PlayerDataID -> pawn -> status. Absent
+    # when the player has no spawned body (never spawned / corpse cleared).
+    status = None
+    if pawn_status_by_id and profile.player_id:
+        status = pawn_status_by_id.get(int(profile.player_id))
 
     out: dict[str, t.Any] = {
         "playerid": profile.player_id or 0,
@@ -907,6 +971,7 @@ def _player_from_profile(profile: Profile, save: t.Any = None) -> dict[str, t.An
         "netAddress": "",
         "engram_points": profile.total_engram_points,
         "experience": _int(profile.experience),
+        "current_stats": _current_stats_dict(status),
     }
     if steam_id:
         out["steamid"] = steam_id
@@ -981,17 +1046,43 @@ def _player_from_object(
         "body_colors": body_colors,
         "died_at": died_iso,
         "corpse_destruction": corpse_iso,
+        "current_stats": _current_stats_dict(status),
     }
     return _compact(data, LEGACY_PLAYER_KEYS)
+
+
+def _player_status_by_data_id(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[int, t.Any]:
+    """Index ``MyCharacterStatusComponent`` per player by ``LinkedPlayerDataID``.
+
+    Walks every ``PlayerPawnTest_*_C`` / ``PlayerCharacter_*`` in the world
+    save, reads its ``LinkedPlayerDataID``, follows ``MyCharacterStatusComponent``
+    via ``lookup``, and stores the resolved status object. Lets profile-based
+    player exports surface live HP/stamina/food/etc. without legacy ASVPack
+    having to do the same join.
+    """
+    out: dict[int, t.Any] = {}
+    objects = getattr(save, "objects", None) or []
+    for obj in objects:
+        cn = str(getattr(obj, "class_name", "") or "")
+        if "PlayerPawn" not in cn and "PlayerCharacter" not in cn:
+            continue
+        pid = _int(_prop(obj, "LinkedPlayerDataID"))
+        if not pid:
+            continue
+        status = _status_for(obj, lookup)
+        if status is not None:
+            out[pid] = status
+    return out
 
 
 def export_players(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
     profiles = _collection(save, "profiles", Profile)
     lookup = _save_lookup(save)
+    pawn_status_by_id = _player_status_by_data_id(save, lookup)
     results: list[dict[str, t.Any]] = []
     for entry in profiles:
         if isinstance(entry, Profile):
-            results.append(_player_from_profile(entry, save))
+            results.append(_player_from_profile(entry, save, pawn_status_by_id))
             continue
         profile_obj = getattr(entry, "profile", None)
         if profile_obj is None and getattr(entry, "objects", None):
