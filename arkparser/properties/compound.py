@@ -140,20 +140,21 @@ class ArrayProperty(Property):
 
         # ASA cloud inventory (version 7+) uses a special format where:
         # - header.data_size is a flag (1) instead of actual size
-        # - header.index contains the element type string length
+        # - header.position contains the element type string length
         # ASA profiles/tribes (version 6) use ASE-style format with actual sizes
-        use_asa_cloud_format = is_asa and header.data_size == 1 and header.index > 0
+        use_asa_cloud_format = is_asa and header.data_size == 1 and header.position > 0
 
         if use_asa_cloud_format:
             # ASA CloudInventory format
-            # The property header already read data_size and index, where:
+            # The property header already read data_size and the second int32 (position),
+            # where:
             # - data_size is a flag (usually 1)
-            # - index is the length of the element type string
-            # So we read the element type string directly (its length is header.index)
-            array_type_len = header.index
+            # - position is the length of the element type string
+            # So we read the element type string directly (its length is header.position)
+            array_type_len = header.position
             array_type_bytes = reader.read_bytes(array_type_len)
             array_type = array_type_bytes[:-1].decode("latin-1")  # Remove null terminator
-            index = header.data_size
+            index = 0  # cloud-format arrays don't carry an array index in the header
 
             if array_type == "StructProperty":
                 # Struct arrays have completely different header - pass count as -1 to signal
@@ -839,17 +840,17 @@ class StructProperty(Property):
 
         # ASA cloud inventory (version 7+) uses a special format where:
         # - header.data_size is a flag (1) instead of actual size
-        # - header.index contains the struct_type string length
+        # - header.position contains the struct_type string length
         # ASA profiles/tribes (version 6) use ASE-style format with actual sizes
-        use_asa_cloud_format = is_asa and header.data_size == 1 and header.index > 0
+        use_asa_cloud_format = is_asa and header.data_size == 1 and header.position > 0
 
         if use_asa_cloud_format:
             # ASA CloudInventory format
-            # The property header already read data_size and index, where:
+            # The property header already read data_size and the second int32 (position),
+            # where:
             # - data_size is a flag (usually 1)
-            # - index is the length of the struct_type string
-            # So we read the struct_type string directly (its length is header.index)
-            struct_type_len = header.index
+            # - position is the length of the struct_type string
+            struct_type_len = header.position
             struct_type_bytes = reader.read_bytes(struct_type_len)
             struct_type = struct_type_bytes[:-1].decode("latin-1")  # Remove null terminator
 
@@ -858,8 +859,9 @@ class StructProperty(Property):
             _zeros = reader.read_int32()  # Usually 0
             _data_size = reader.read_int32()  # Size of struct data
 
-            # Use header.data_size as the index for ASA (usually 1, but could vary)
-            index = header.data_size
+            # Cloud-format structs don't carry an array index in the header;
+            # any real array slot is signalled by extra_byte bit 0 below.
+            index = 0
 
             # Read the extra byte that appears before struct data
             extra_byte = reader.read_uint8()
