@@ -582,6 +582,25 @@ Schema policy:
 
 ASA worldsave property layouts differ between **v13** (`TheIsland_WP` and older single-player saves — legacy `AsaSavegameToolkit`-style `dataSize + position + typeRef + byte` body) and **v14+** (current production ASA — marker-based body). Both are parsed by version-aware property readers; `WorldSave.version` is the source of truth.
 
+### Known limitation: ASA cryopod property blocks are partially decoded
+
+ASA cryopods (`PrimalItem_WeaponEmptyCryopod_C`, `SoulTrap`, `Vivarium`, `DinoBall`) store the embedded creature snapshot inside the item's `CustomItemDatas.CustomDataBytes.ByteArrays[0]` as a **zlib + custom-RLE compressed `AsaDataStore` blob**. The parser surfaces the snapshot via the simpler `CustomDataStrings` / `CustomDataFloats` accessors, exposing **species, tamed name, level, color regions, and `CurrentStatusValues[0..11]`** on each cryopodded creature.
+
+What is **NOT yet extracted** from ASA cryopod blobs:
+
+- `DinoID1` / `DinoID2` (and therefore `id` / `dinoid`)
+- `TamingTeamID` / `TargetingTeam` (and therefore `tribeid`)
+- `TamerString`, `OwningPlayerID`, `OwningPlayerName`
+- `TamedOnServerName`, `UploadedFromServerName`
+- `BaseCharacterLevel` vs `ExtraCharacterLevel` split (only the displayed total surfaces)
+- Mutation counts, imprint quality, ancestors, behavioural toggles, etc.
+
+ASA cryopod records therefore come back with `tribeid: 0`, `tamer: ""`, `dinoid: "0"`, `imprint: 0.0` on the otherwise-rich tamed schema. The compressed property block at the C#-reported `PropertyOffset + 1` decompresses cleanly through both zlib and the custom RLE (matching `AsaCompressedData.cs` byte-for-byte), and the surrounding `AsaGameObject` headers parse correctly — but the property-list bytes that follow do **not** form valid name-table references under any alignment we tried (including the layout `AsaPropertyRegistry.ReadProperty` uses). The legacy AsaSavegameToolkit wraps `ReadProperties` in a swallowing try/catch (`AsaGameObject.cs:178-193`), so it is plausible that **no current open-source tool extracts this data** either.
+
+**ASE cryopod records are fully populated** via the in-place property-list blob — `from_cryopod_bytes` surfaces every legacy ASV_Tamed field.
+
+If you crack the ASA cryopod block format (e.g. via UE5 source-level RE on `UPropertySerializer` for these compressed stores, or a working reference output to byte-diff against), please open a PR — the bytes are correctly decompressed and exposed in `WorldSave.iter_cryopod_creatures()`, only the property reader is missing.
+
 ## Testing
 
 ```powershell
