@@ -583,6 +583,306 @@ def _inventory_component(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
     return None
 
 
+# Item properties already surfaced at top-level of an inventory entry or
+# representing internal save plumbing we strip from the ``stats`` subdict.
+# Stripping these is the difference between meaningful per-item stats and
+# unbounded snake_case dumps of UE4 internals.
+_ITEM_STATS_SKIP: frozenset[str] = frozenset({
+    # Already surfaced at top level of inventory entry.
+    # (ItemID is kept and combined into ``stats.id`` for unique tracking)
+    "ItemQuantity",
+    "bIsBlueprint",
+    # Internal save plumbing / object refs.
+    "OwnerInventory",
+    "ItemCustomClass",
+    "CustomItemDatas",       # cryopod blob, surfaced via dino_* keys
+    "CustomItemData",
+    "CustomItemName",
+    "CustomItemDescription",
+    # Internal timestamps / versioning, opaque to consumers.
+    "LastAutoDurabilityDecreaseTime",
+    "ItemVersion",
+    "CreationTime",
+    "LastUseTime",
+    # UI / engine state flags. Not item state, not actionable downstream.
+    "bAllowRemovalFromInventory",
+    "bHideFromInventoryDisplay",
+    "bHideFromRemoteInventoryDisplay",
+    "bCanSlot",
+    "bAllowEquppingItem",    # sic, ARK typo preserved in save format
+    "bIsInitialItem",
+    "bForcePreventGrinding",
+    "bIsEngram",             # redundant with item class
+    "bIsCustomRecipe",
+    "bIsFoodRecipe",
+    "bIsRepairing",
+    "bIsEquipped",
+    "bIsSlot",
+    "bAllowRemovalFromSteamInventory",
+    "bIsFromAllClustersInventory",
+    "bFromSteamInventory",
+    # Cloud / tribute internals.
+    "ItemArchetype",         # blueprint path, redundant with itemId
+    "SteamUserItemID",       # always empty array on cluster items
+    "UploadEarliestValidTime",
+    "ExpirationTimeUTC",     # tribute expiry, opaque UTC seconds
+    "ClusterSpoilingTimeUTC",
+    "CraftingSkill",         # 0 on uploaded items
+    "ItemProfileVersion",    # internal versioning
+    "bNetInfoFromClient",    # net replication flag
+    "OwnerPlayerDataID",     # 0 on uploaded items
+    "LastOwnerPlayer",       # -1 sentinel on uploaded items
+    "ItemStatClampsMultiplier",
+    "OwnerPlayerDataId",     # ASA casing variant of OwnerPlayerDataID
+    # ASA cosmetic / cluster noise.
+    "CustomCosmeticAuthVars",
+    "CustomCosmeticModSkinReplacementID",
+    "CustomCosmeticModSkinVariantID",
+    "bDoApplyOriginalColorsWhenUnskinned",
+    "bIsFromClubArk",
+})
+
+# Egg-genetic fields in ArkTributeItem are populated with garbage struct
+# overlap bytes for non-egg items. Only surface them when the item is
+# actually an egg.
+_EGG_ONLY_FIELDS: frozenset[str] = frozenset({
+    "egg_number_of_level_up_points_applied",
+    "egg_tamed_ineffectiveness_modifier",
+    "egg_color_set_indices",
+    "egg_gender_override",
+    "egg_dino_ancestors",
+    "egg_dino_ancestors_male",
+    "egg_random_mutations_female",
+    "egg_random_mutations_male",
+    "egg_number_mutations_applied",
+    "egg_dino_gene_traits",
+})
+
+
+def _is_meaningful_value(value: t.Any) -> bool:
+    """Filter no-op default values from item stat output.
+
+    Empty containers and empty strings carry no information; surfacing them
+    just adds JSON noise. NaN floats are treated as missing (ARK uses NaN
+    for "no expiration / never spoils"). Numeric zeros are kept (a stat
+    value of 0 is legitimate, e.g. unequipped saddle slot).
+    """
+    if value is None:
+        return False
+    if isinstance(value, (list, dict, str)) and len(value) == 0:
+        return False
+    if isinstance(value, float) and value != value:  # NaN
+        return False
+    if isinstance(value, str) and value == "Unknown":
+        return False
+    return True
+
+
+# Per-key default sentinels. When a stat surfaces a value equal to its
+# sentinel, that field carries no signal (skin -1 = no skin applied, etc).
+# Drop the key entirely rather than spamming JSON output with no-ops.
+_STAT_KEY_DEFAULTS: dict[str, t.Any] = {
+    "skin": -1,
+    "craft_queue": 0,
+    "craft_at": 0.0,
+    "custom_id": 0,
+    "slot": 0,
+    "temp_slot": 0,
+    "loaded_ammo": 0,
+    "skill_bonus": 0.0,
+    "spoils_at": 0.0,
+    "spoiled_at": 0.0,
+    "rating": 0.0,
+    "color_pre_skin": [0, 0, 0, 0, 0, 0],
+    "drop_location": {"x": 0.0, "y": 0.0, "z": 0.0},
+    "quality": 0,
+    "item_durability": 0.0,
+    "associated_dino_id": 0,
+}
+
+
+def _is_default(key: str, value: t.Any) -> bool:
+    """True if ``value`` matches the documented no-signal sentinel for ``key``."""
+    if key not in _STAT_KEY_DEFAULTS:
+        return False
+    default = _STAT_KEY_DEFAULTS[key]
+    if isinstance(default, list) and isinstance(value, list):
+        return len(value) == len(default) and all(
+            a == b for a, b in zip(value, default)
+        )
+    if isinstance(default, dict) and isinstance(value, dict):
+        return all(value.get(k, 0) == v for k, v in default.items())
+    return value == default
+
+
+def _flatten_color_array(value: t.Any) -> dict[str, int]:
+    """``color: [c0..c5]`` (or dict[idx → c]) → ``{c0, c1, ..., c5}``.
+
+    Mirrors how tame exports surface region colors (``c0`` .. ``c5``).
+    Non-zero entries only; all-zero color arrays return ``{}`` so the
+    caller can skip emission.
+    """
+    out: dict[str, int] = {}
+    iterable: t.Iterable[tuple[int, t.Any]]
+    if isinstance(value, dict):
+        iterable = ((int(k), v) for k, v in value.items() if isinstance(k, (int, str)) and str(k).lstrip("-").isdigit())
+    elif isinstance(value, list):
+        iterable = enumerate(value)
+    else:
+        return out
+    for idx, v in iterable:
+        if 0 <= idx < 6 and v:
+            out[f"c{idx}"] = int(v)
+    return out
+
+# ARK universal 8-slot ItemStatValues map. Each slot is raw uint16; the
+# displayed percentage = raw * per-blueprint multiplier (in the item's UE
+# blueprint, not the save). Slot semantics stable across all item classes;
+# names disambiguated from top-level entries (e.g. ``durability_max`` for
+# the multiplier slot vs ``durability`` for current condition 0-1).
+_ITEM_STAT_SLOT_NAMES: tuple[str, ...] = (
+    "gen_quality",       # rarely populated
+    "armor",
+    "durability_max",
+    "damage",            # weapon damage %
+    "clip_size",         # weapon clip multiplier (NOT currently-loaded ammo)
+    "hypo",              # hypothermal insulation
+    "weight",
+    "hyper",             # hyperthermal insulation
+)
+
+# Snake_case property name → shorter consumer-facing name. Applied after
+# pascal→snake conversion. Anything not in the table keeps its snake_case
+# name so newly-added ASA props still surface automatically.
+_STAT_NAME_ALIASES: dict[str, str] = {
+    "item_rating": "rating",
+    "item_quality_index": "quality",
+    "saved_durability": "durability",
+    "item_color_id": "color",
+    "pre_skin_item_color_id": "color_pre_skin",
+    "item_skin_template": "skin",
+    "weapon_clip_ammo": "loaded_ammo",
+    "crafter_character_name": "crafter",
+    "crafter_tribe_name": "crafter_tribe",
+    "crafted_skill_bonus": "skill_bonus",
+    "custom_item_id": "custom_id",
+    "last_spoiling_time": "spoiled_at",
+    "next_spoiling_time": "spoils_at",
+    "next_craft_completion_time": "craft_at",
+    "slot_index": "slot",
+    "temp_slot_index": "temp_slot",
+    "accessory_slot_override": "accessory_slot",
+    "original_item_drop_location": "drop_location",
+    "chibi_xp": "chibi_xp",
+}
+
+
+def _combine_item_id(value: t.Any) -> str | None:
+    """Combine ItemID struct ``{ItemID1, ItemID2}`` to single string."""
+    if not isinstance(value, dict):
+        return None
+    id1 = value.get("ItemID1") or value.get("ItemID1_0")
+    id2 = value.get("ItemID2") or value.get("ItemID2_0")
+    if id1 is None and id2 is None:
+        return None
+    return f"{int(id1 or 0)}_{int(id2 or 0)}"
+
+
+def _normalize_stat_value(name: str, value: t.Any) -> t.Any:
+    """Collapse single-index dicts. ItemStatValues handled separately."""
+    if isinstance(value, dict) and len(value) == 1 and 0 in value:
+        return value[0]
+    if isinstance(value, dict) and len(value) == 1 and "0" in value:
+        return value["0"]
+    return value
+
+
+def _apply_stat_aliases(
+    stats: dict[str, t.Any],
+    *,
+    item_class: str = "",
+) -> dict[str, t.Any]:
+    """Flatten item_stat_values + item_id; apply short-name aliases.
+
+    Filters egg_* fields when ``item_class`` isn't an egg (those fields
+    are bit-leaked struct overlap garbage on non-egg items in ASA cloud
+    tribute data). Also filters empty containers/strings universally.
+    """
+    is_egg = "Egg" in item_class
+    out: dict[str, t.Any] = {}
+    raw_slot_values = stats.pop("item_stat_values", None)
+    item_id = stats.pop("item_id", None)
+    combined_id = _combine_item_id(item_id) if item_id is not None else None
+    if combined_id:
+        out["id"] = combined_id
+    dino_id1 = stats.pop("associated_dino_id1", None)
+    dino_id2 = stats.pop("associated_dino_id2", None)
+    combined_dino = _combine_dino_id(dino_id1, dino_id2) if (dino_id1 or dino_id2) else 0
+    if combined_dino:
+        out["associated_dino_id"] = combined_dino
+    color_raw = stats.pop("item_color_id", None)
+    if color_raw is not None:
+        out.update(_flatten_color_array(color_raw))
+    for key, val in stats.items():
+        if key in _EGG_ONLY_FIELDS and not is_egg:
+            continue
+        if not _is_meaningful_value(val):
+            continue
+        alias = _STAT_NAME_ALIASES.get(key, key)
+        if _is_default(alias, val):
+            continue
+        out[alias] = val
+    if isinstance(raw_slot_values, dict):
+        for k, v in raw_slot_values.items():
+            try:
+                idx = int(k)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < len(_ITEM_STAT_SLOT_NAMES) and v is not None:
+                out[_ITEM_STAT_SLOT_NAMES[idx]] = v
+    return out
+
+_PASCAL_SNAKE_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
+_PASCAL_SNAKE_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
+
+
+def _pascal_to_snake(name: str) -> str:
+    """``ItemStatValues`` → ``item_stat_values``, ``bIsBlueprint`` → ``b_is_blueprint``."""
+    s = _PASCAL_SNAKE_RE_1.sub(r"\1_\2", name)
+    return _PASCAL_SNAKE_RE_2.sub(r"\1_\2", s).lower()
+
+
+def _item_stats_dict(item_obj: t.Any, item_class: str = "") -> dict[str, t.Any]:
+    """Surface every parseable property on an inventory item as snake_case.
+
+    Walks the GameObject's serialized property map (object refs already
+    stripped by ``_serialize_properties``), converts each property name to
+    snake_case, and drops a small denylist of fields that are either
+    redundant with the top-level entry (qty, blueprint), internal plumbing
+    (ItemID, OwnerInventory), or huge embedded blobs surfaced elsewhere
+    (CustomItemDatas).
+
+    Returns ``{}`` if the object cannot be introspected (synthetic / no
+    properties).
+    """
+    serializer = getattr(item_obj, "_serialize_properties", None)
+    if not callable(serializer):
+        return {}
+    try:
+        raw = serializer()
+    except Exception:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    pre: dict[str, t.Any] = {}
+    for name, value in raw.items():
+        if name in _ITEM_STATS_SKIP:
+            continue
+        snake = _pascal_to_snake(name)
+        pre[snake] = _normalize_stat_value(snake, value)
+    return _apply_stat_aliases(pre, item_class=item_class)
+
+
 def _inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t.Any]]:
     inv = _inventory_component(obj, lookup)
     if inv is None:
@@ -616,6 +916,7 @@ def _inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t
                 name = props.get("TamedName") or props.get("TamedName_0")
                 if name:
                     entry["dino_name"] = str(name)
+        entry.update(_item_stats_dict(item_obj, class_name))
         items.append(entry)
     return items
 
@@ -792,6 +1093,53 @@ def export_tamed(save: t.Any, map_config: MapConfig | None = None) -> list[dict[
     return results
 
 
+def _build_item_owner_lookup(
+    save: t.Any, lookup: dict[t.Any, t.Any]
+) -> dict[t.Any, dict[str, t.Any]]:
+    """Map inventory-item id → owning container info.
+
+    For every object that has an ``InventoryItems`` property (structures,
+    player pawns, dino inventory components), walk its contained item refs
+    and record the owner's tribe id + display names. Used to infer tribe
+    affiliation for ASA cryopod creatures whose embedded property blocks
+    we cannot decode, but whose containing cryopod item lives in a
+    structure or player inventory we *can* read.
+    """
+    out: dict[t.Any, dict[str, t.Any]] = {}
+    objects = getattr(save, "objects", None) or []
+    iterable = objects.values() if isinstance(objects, dict) else objects
+    # Walk every actor with a MyInventoryComponent ref (structures, player
+    # pawns, dinos), resolve the inventory, then enumerate its items.
+    # Walking from the actor side gives us TargetingTeam / TribeName /
+    # PlayerName directly, no reverse lookup needed.
+    for actor in iterable:
+        inv_ref = _prop(actor, "MyInventoryComponent")
+        if inv_ref is None:
+            continue
+        inv = _resolve(inv_ref, lookup)
+        if inv is None:
+            continue
+        refs = _prop(inv, "InventoryItems")
+        if not isinstance(refs, list) or not refs:
+            continue
+        tid = _int(_prop(actor, "TargetingTeam"))
+        tribe_name = _str(_prop(actor, "TribeName")) or _str(_prop(actor, "OwnerName"))
+        info = {
+            "TargetingTeam": tid,
+            "TribeName": tribe_name,
+        }
+        for ref in refs:
+            item_obj = _resolve(ref, lookup)
+            if item_obj is None:
+                continue
+            item_id = getattr(item_obj, "id", None)
+            if item_id is None:
+                continue
+            if item_id not in out:
+                out[item_id] = info
+    return out
+
+
 def _export_world_cryopods(
     save: t.Any,
     map_config: MapConfig | None,
@@ -803,17 +1151,29 @@ def _export_world_cryopods(
     ``CustomItemDatas``. ``get_tamed_creatures()`` therefore misses them
     entirely. We walk ``iter_cryopod_creatures()`` (when available),
     decode each embedded blob, and produce ``ASV_Tamed`` entries with
-    ``cryo=True`` and the cryopod item's location.
+    ``cryo=True`` and the cryopod item's location. When the embedded
+    blob does not yield a tribe id (ASA, partial decode), we infer it
+    from the cryopod item's containing inventory (structure or pawn).
     """
     iter_cryos = getattr(save, "iter_cryopod_creatures", None)
     if not callable(iter_cryos):
         return []
+    lookup = _save_lookup(save)
+    owner_lookup = _build_item_owner_lookup(save, lookup)
     out: list[dict[str, t.Any]] = []
     empty_lookup: dict[t.Any, t.Any] = {}
     for item_obj, cryo in iter_cryos():
         actor, status = _cryo_props_to_synthetic(cryo)
         # Inherit the cryopod's world location so GPS fields populate.
         actor.location = getattr(item_obj, "location", None)
+        # Infer tribe/owner from containing inventory when the decoded
+        # creature blob did not supply them (ASA partial decode path).
+        item_id = getattr(item_obj, "id", None)
+        owner_info = owner_lookup.get(item_id) if item_id is not None else None
+        if owner_info is not None:
+            for key, val in owner_info.items():
+                if val and not cryo.creature_props.get(key):
+                    cryo.creature_props[key] = val
         record = _tamed_dict(actor, status, empty_lookup, map_config, save)
         # The synthetic actor carries no IsInCryo property; force the legacy
         # flag so consumers can distinguish in-world tames from stored ones.
@@ -883,6 +1243,10 @@ def export_cluster_uploads(
     :class:`CryopodCreature` and run it through the standard tamed-export
     field map.
 
+    Cryopodded creatures inside ``ArkItems`` (uploaded cryopods) are also
+    included here so a cluster export captures every cluster-resident dino
+    regardless of which array it landed in.
+
     Args:
         cluster_inventories: ``CloudInventory`` instances loaded from a
             cluster directory.
@@ -918,8 +1282,143 @@ def export_cluster_uploads(
             if cryo is None:
                 continue
             actor, status = _cryo_props_to_synthetic(cryo)
-            out.append(_tamed_dict(actor, status, empty_lookup, map_config))
+            record = _tamed_dict(actor, status, empty_lookup, map_config)
+            record["cryo"] = True
+            out.append(record)
+        # Cryopods uploaded as items (rare but present, especially in ASA
+        # tribute transfers) embed a CryopodCreature in CustomItemDatas.
+        for item in inv.uploaded_items:
+            if _is_placeholder_item(item) or not item.is_cryopod:
+                continue
+            cryo = item.cryopod_creature
+            if cryo is None:
+                continue
+            actor, status = _cryo_props_to_synthetic(cryo)
+            record = _tamed_dict(actor, status, empty_lookup, map_config)
+            record["cryo"] = True
+            out.append(record)
     return out
+
+
+def _uploaded_item_dict(item: t.Any) -> dict[str, t.Any]:
+    """Shape a single ``UploadedItem`` as an inventory-style entry.
+
+    Mirrors ``_inventory_items``: ``itemId``/``qty``/``blueprint`` at top,
+    all aliased stats flattened in. Cryopod items get ``dino_*`` keys.
+    """
+    blueprint = item.blueprint or ""
+    class_name = blueprint.rsplit(".", 1)[-1] if "." in blueprint else (item.name or "")
+    if not class_name:
+        # ASA cluster items store the class via ``ItemCustomClass`` object ref
+        # instead of ``ItemArchetype`` path. Use that as the itemId fallback.
+        ark_tribute = normalize_indexed_data(item.raw_data.get("ArkTributeItem", {}))
+        if isinstance(ark_tribute, dict):
+            custom_class = ark_tribute.get("ItemCustomClass")
+            if isinstance(custom_class, tuple) and len(custom_class) == 2:
+                custom_class = custom_class[1]
+            if isinstance(custom_class, str) and custom_class:
+                class_name = custom_class.rsplit(".", 1)[-1] if "." in custom_class else custom_class
+    entry: dict[str, t.Any] = {
+        "itemId": class_name or item.name,
+        "qty": item.quantity,
+        "blueprint": item.is_blueprint,
+    }
+    if item.is_cryopod:
+        cryo = item.cryopod_creature
+        if cryo is not None:
+            props = cryo.creature_props
+            dino_id = _combine_dino_id(
+                props.get("DinoID1", props.get("DinoID1_0", 0)),
+                props.get("DinoID2", props.get("DinoID2_0", 0)),
+            )
+            if dino_id:
+                entry["dino_id"] = dino_id
+            species_or_class = cryo.species or cryo.class_name
+            if species_or_class:
+                entry["dino_creature"] = str(species_or_class)
+            if cryo.name:
+                entry["dino_name"] = cryo.name
+    ark_tribute = normalize_indexed_data(item.raw_data.get("ArkTributeItem", {}))
+    if isinstance(ark_tribute, dict):
+        pre: dict[str, t.Any] = {}
+        for name, value in ark_tribute.items():
+            if name in _ITEM_STATS_SKIP:
+                continue
+            snake = _pascal_to_snake(name)
+            pre[snake] = _normalize_stat_value(snake, value)
+        entry.update(_apply_stat_aliases(pre, item_class=class_name))
+    upload_time = item.upload_time
+    if upload_time:
+        try:
+            entry["upload_time"] = dt.datetime.fromtimestamp(
+                float(upload_time), tz=dt.timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            entry["upload_time"] = upload_time
+    return entry
+
+
+def _is_placeholder_item(item: t.Any) -> bool:
+    """ASA cluster files include empty placeholder slots (no class).
+
+    Identified by: no blueprint path, no item name, no ItemCustomClass ref
+    in the underlying ArkTributeItem. ``item.quantity`` is coerced to >=1
+    even when the source ``ItemQuantity`` is 0, so it isn't a reliable
+    signal here.
+    """
+    if item.blueprint or item.name:
+        return False
+    ark_tribute = normalize_indexed_data(item.raw_data.get("ArkTributeItem", {}))
+    if isinstance(ark_tribute, dict):
+        custom_class = ark_tribute.get("ItemCustomClass")
+        if isinstance(custom_class, tuple) and len(custom_class) == 2:
+            custom_class = custom_class[1]
+        if custom_class:
+            return False
+    return True
+
+
+def export_cluster_items(
+    cluster_inventories: t.Iterable[CloudInventory],
+) -> list[dict[str, t.Any]]:
+    """Export every uploaded item across the supplied cloud inventories.
+
+    Each item carries its own snake_case ``stats`` subdict surfacing the
+    full ``ArkTributeItem`` payload (damage, durability, crafter info,
+    etc). Cryopod items also include ``dino_*`` keys with the embedded
+    creature's identifying info; the dino's full stats record is emitted
+    by :func:`export_cluster_uploads`.
+    """
+    out: list[dict[str, t.Any]] = []
+    for inv in cluster_inventories:
+        for item in inv.uploaded_items:
+            if _is_placeholder_item(item):
+                continue
+            out.append(_uploaded_item_dict(item))
+    return out
+
+
+def export_cloud_inventory(
+    cloud: CloudInventory,
+    map_config: MapConfig | None = None,
+) -> dict[str, list[dict[str, t.Any]]]:
+    """Inspect a single cloud-inventory file.
+
+    Returns a dict with two ASV-shaped lists:
+
+    - ``ASV_Tamed``: every dino in the file (both ``ArkTamedDinosData``
+      entries and cryopod items in ``ArkItems``), shaped like a regular
+      tamed record so consumers can reuse existing rendering.
+    - ``ASV_Items``: every uploaded item, snake_case ``stats`` subdict
+      included.
+
+    Useful for inspecting a single user's cluster transfer file in
+    isolation, without scanning a whole cluster directory.
+    """
+    return {
+        _EXPORT_NAMES["tamed"]: export_cluster_uploads([cloud], map_config),
+        "ASV_Items": export_cluster_items([cloud]),
+    }
 
 
 _NONTAMEABLE_CLASSES: frozenset[str] = frozenset({
@@ -1118,27 +1617,74 @@ def _player_status_by_data_id(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[i
     return out
 
 
-def export_players(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
+def _cluster_items_by_xuid(
+    cluster_inventories: t.Iterable[CloudInventory],
+) -> dict[str, list[dict[str, t.Any]]]:
+    """Group uploaded items by cloud-file stem (= player's unique_id / xuid).
+
+    Each cluster file is named after the owning player's Steam id (ASE) or
+    platform UUID (ASA). The file stem matches ``Profile.unique_id`` for
+    that player, giving a stable join key without needing to crack any
+    in-file ownership data.
+    """
+    out: dict[str, list[dict[str, t.Any]]] = {}
+    for inv in cluster_inventories:
+        if inv.source_path is None:
+            continue
+        xuid = inv.source_path.stem
+        if not xuid:
+            continue
+        bucket = out.setdefault(xuid, [])
+        for item in inv.uploaded_items:
+            if _is_placeholder_item(item):
+                continue
+            entry = _uploaded_item_dict(item)
+            entry["uploaded"] = True
+            bucket.append(entry)
+    return out
+
+
+def export_players(
+    save: t.Any,
+    map_config: MapConfig | None = None,
+    cluster_inventories: t.Iterable[CloudInventory] | None = None,
+) -> list[dict[str, t.Any]]:
     profiles = _collection(save, "profiles", Profile)
     lookup = _save_lookup(save)
     pawn_status_by_id = _player_status_by_data_id(save, lookup)
+    cluster_items = (
+        _cluster_items_by_xuid(cluster_inventories) if cluster_inventories else {}
+    )
     results: list[dict[str, t.Any]] = []
     for entry in profiles:
+        record: dict[str, t.Any]
         if isinstance(entry, Profile):
-            results.append(_player_from_profile(entry, save, pawn_status_by_id))
-            continue
-        profile_obj = getattr(entry, "profile", None)
-        if profile_obj is None and getattr(entry, "objects", None):
-            profile_obj = entry.objects[0]
-        if profile_obj is None:
-            continue
-        status_obj = None
-        for o in getattr(entry, "objects", []) or []:
-            cn = str(getattr(o, "class_name", ""))
-            if "StatusComponent" in cn or "CharacterStatus" in cn:
-                status_obj = o
-                break
-        results.append(_player_from_object(profile_obj, status_obj, lookup, map_config, save))
+            record = _player_from_profile(entry, save, pawn_status_by_id)
+        else:
+            profile_obj = getattr(entry, "profile", None)
+            if profile_obj is None and getattr(entry, "objects", None):
+                profile_obj = entry.objects[0]
+            if profile_obj is None:
+                continue
+            status_obj = None
+            for o in getattr(entry, "objects", []) or []:
+                cn = str(getattr(o, "class_name", ""))
+                if "StatusComponent" in cn or "CharacterStatus" in cn:
+                    status_obj = o
+                    break
+            record = _player_from_object(profile_obj, status_obj, lookup, map_config, save)
+        # Splice cluster-uploaded items into the player's inventory list,
+        # tagged ``uploaded: true`` so consumers can distinguish them from
+        # carried items. Matched by the cloud file's stem == profile's
+        # unique_id (Steam id / platform UUID).
+        steam_id = record.get("steamid") or ""
+        if steam_id and steam_id in cluster_items:
+            inv_list = record.get("inventory")
+            if not isinstance(inv_list, list):
+                inv_list = []
+                record["inventory"] = inv_list
+            inv_list.extend(cluster_items[steam_id])
+        results.append(record)
     return results
 
 
@@ -1664,7 +2210,7 @@ def export_all(
     return {
         _EXPORT_NAMES["tamed"]: tamed,
         _EXPORT_NAMES["wild"]: export_wild(save, map_config),
-        _EXPORT_NAMES["players"]: export_players(save, map_config),
+        _EXPORT_NAMES["players"]: export_players(save, map_config, cluster_invs or None),
         _EXPORT_NAMES["tribes"]: export_tribes(save),
         _EXPORT_NAMES["structures"]: export_structures(save, map_config),
         _EXPORT_NAMES["tribe_logs"]: export_tribe_logs(save),

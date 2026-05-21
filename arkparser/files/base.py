@@ -41,6 +41,7 @@ class ArkFile(ABC):
     objects: list[GameObject] = field(default_factory=list)
     container: GameObjectContainer = field(default_factory=GameObjectContainer)
     is_asa: bool = False
+    source_path: Path | None = None
 
     # Subclasses must define these
     VALID_VERSIONS: t.ClassVar[tuple[int, ...]] = ()
@@ -82,15 +83,18 @@ class ArkFile(ABC):
             ArkParseError: If the file cannot be parsed
             FileNotFoundError: If the file path doesn't exist
         """
+        source_path: Path | None = None
         if isinstance(source, bytes):
             reader = BinaryReader.from_bytes(source)
         else:
-            path = Path(source)
-            if not path.exists():
-                raise FileNotFoundError(f"File not found: {path}")
-            reader = BinaryReader.from_file(path)
+            source_path = Path(source)
+            if not source_path.exists():
+                raise FileNotFoundError(f"File not found: {source_path}")
+            reader = BinaryReader.from_file(source_path)
 
-        return cls._parse(reader)
+        instance = cls._parse(reader)
+        instance.source_path = source_path
+        return instance
 
     @classmethod
     def _parse(cls, reader: BinaryReader) -> t.Self:

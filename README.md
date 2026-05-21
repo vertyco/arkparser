@@ -186,7 +186,7 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 | `uploadedServer` | legacy | `UploadedFromServerName` |
 | `maturation` | legacy | `str(int(BabyAge * 100))` (string for legacy parity) |
 | `traits` | legacy | `CreatureTraits` (full list of mutation trait class names) |
-| `inventory` | legacy | items from `MyInventoryComponent.InventoryItems`. Each entry carries `itemId`, `qty`, `blueprint`. When the item is a **cryopod / soultrap / vivarium / dinoball** with an embedded creature, the entry is enriched with `dino_id` (combined 64-bit id matching the corresponding `ASV_Tamed` record), `dino_creature` (species / class name), and `dino_name` (`TamedName` if set). Cryopods stored in containers (cryofridges, vaults, dedicated storage) get the same enrichment. |
+| `inventory` | legacy | items from `MyInventoryComponent.InventoryItems`. Each entry carries `itemId`, `qty`, `blueprint`, plus a full snake_case property dump flattened in at the top level (`id`, `rating`, `durability`, `quality`, `damage`, `armor`, `durability_max`, `hypo`, `hyper`, `clip_size`, `weight`, `crafter`, `crafter_tribe`, `skill_bonus`, `loaded_ammo`, `spoils_at`, `spoiled_at`, `c0`..`c5`, `egg_*`, etc). `item_stat_values` is unpacked into the universal 8-slot ARK map (slot 0 `gen_quality`, 1 `armor`, 2 `durability_max`, 3 `damage`, 4 `clip_size`, 5 `hypo`, 6 `weight`, 7 `hyperthermal_insulation`); raw uint16s scaled by the per-blueprint multiplier (which lives in the UE blueprint, not the save). Default / unset values are filtered (no `craft_queue=0`, `skin=-1`, `color_pre_skin=[0]*6`, NaN spoil timers, etc). When the item is a **cryopod / soultrap / vivarium / dinoball** with an embedded creature, the entry is enriched with `dino_id` (combined 64-bit id matching the corresponding `ASV_Tamed` record), `dino_creature` (species / class name), and `dino_name` (`TamedName` if set). Cryopods stored in containers (cryofridges, vaults, dedicated storage) get the same enrichment. |
 | `father_id`, `mother_id` | added | combined dino id from the first `DinoAncestors` entry (`null` when missing) |
 | `father_name`, `mother_name` | added | name strings from the first `DinoAncestors` entry |
 | `level_added` | added | `ExtraCharacterLevel` (post-tame levels, broken out from `lvl`) |
@@ -365,18 +365,48 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `lat`, `lon`, `ccc` | legacy | location via `MapConfig` |
 | `inventory` | legacy | inventory items (only meaningful for beaver dams / dropped supply crates) |
 
-### Cluster-uploaded creatures
+### Cluster-uploaded creatures and items
 
-To match the legacy exporter's behaviour of including cluster-uploaded tames (creatures stored in obelisk/cloud-inventory files), pass the cluster directory to `export_all` / `export_to_files`:
+Pass the cluster directory to `export_all` / `export_to_files` to fold cluster data into the per-map output:
 
 ```python
 export_to_files(save, "output/", map_config, cluster="path/to/cluster")
 # or equivalently:
 data = export_all(save, map_config, cluster="path/to/cluster")
-# data["ASV_Tamed"] now includes both world tames and cluster uploads.
+# data["ASV_Tamed"]   - now includes cluster cryopod tames (cryo=True)
+# data["ASV_Players"] - each player's inventory now contains their
+#                       uploaded items (entries tagged "uploaded": true),
+#                       matched by cloud-file stem (xuid) ==
+#                       Profile.unique_id.
 ```
 
-Pre-loaded `CloudInventory` instances also work (`cluster=[inv1, inv2, ...]`). The low-level helper `export_cluster_uploads(cluster_invs, map_config)` is still available if you need cluster-only output.
+Cluster items are spliced into the owning player's `inventory`; no separate `ASV_ClusterItems` file is emitted. The match works because every cluster file is named after the owning player's Steam id / platform UUID, which is the same value as `Profile.unique_id`.
+
+Pre-loaded `CloudInventory` instances also work (`cluster=[inv1, inv2, ...]`).
+
+### Standalone cloud-inventory inspection
+
+For staff tools that need to inspect a single user's obelisk / cluster file in isolation (no worldsave context, no per-player matching), use `export_cloud_inventory`:
+
+```python
+from arkparser import CloudInventory, export_cloud_inventory
+
+cloud = CloudInventory.load("/cluster/2533274802706466")  # ASE xuid
+# or
+cloud = CloudInventory.load("/cluster/000297eb6c36484ab95c75d7bbbc8629")  # ASA UUID
+
+data = export_cloud_inventory(cloud)
+# {
+#   "ASV_Tamed": [ ... every dino, cryopod-embedded or otherwise ... ],
+#   "ASV_Items": [ ... every uploaded item, snake_case flat stats ... ],
+# }
+```
+
+Each `ASV_Items` entry carries `itemId`, `qty`, `blueprint`, `id` (combined ItemID1_ItemID2), `upload_time` (ISO 8601 with UTC offset), and item-class-specific stats (`durability_max`, `damage`, `armor`, `hypo`, `hyper`, `crafter`, `crafter_tribe`, `skill_bonus`, `loaded_ammo`, `quality`, `rating`, `c0`..`c5` paint regions, `drop_location`, `egg_*` for fertilized eggs, `dino_*` for cryopod items, etc). Default / unset fields are filtered, NaN floats dropped, `"Unknown"` crafter strings nulled.
+
+The low-level helpers are also available:
+- `export_cluster_uploads(cluster_invs, map_config=None) -> list[dict]` &mdash; tamed-shape records (incl. cryopod-as-item dinos) across the supplied cloud files
+- `export_cluster_items(cluster_invs) -> list[dict]` &mdash; every uploaded item across the supplied cloud files
 
 ## Package Structure
 
@@ -525,14 +555,16 @@ All four expose `from_*` constructors and `to_dict()` for serialization.
 |---|---|---|
 | `export_tamed(save, map_config=None)` | `list[dict]` | `ASV_Tamed` records |
 | `export_wild(save, map_config=None)` | `list[dict]` | `ASV_Wild` records |
-| `export_players(save, map_config=None)` | `list[dict]` | `ASV_Players` records (from Profile parsers) |
+| `export_players(save, map_config=None, cluster_inventories=None)` | `list[dict]` | `ASV_Players` records (from Profile parsers). Pass `cluster_inventories` to splice each player's uploaded items into their `inventory` (entries tagged `uploaded: true`, matched by xuid stem == `Profile.unique_id`) |
 | `export_tribes(save)` | `list[dict]` | `ASV_Tribes` records |
 | `export_structures(save, map_config=None)` | `list[dict]` | `ASV_Structures` records |
 | `export_tribe_logs(save)` | `list[dict]` | `ASV_TribeLogs` records |
 | `export_map_structures(save, map_config=None)` | `list[dict]` | `ASV_MapStructures` records |
-| `export_all(save, map_config=None)` | `dict[str, list[dict]]` | All seven exports keyed by ASV filename stem |
-| `export_cluster_uploads(cluster_inventories, map_config=None)` | `list[dict]` | Tamed-shape records for creatures stored in cluster `CloudInventory` files (decoded from `ArkTamedDinosData[].DinoData` blobs) |
-| `export_to_files(save, output_dir, map_config=None, wrap=True)` | `list[Path]` | Writes each export to `<dir>/<ASV_Name>.json`. `wrap=True` (default) emits the legacy `{map, day, time, data}` envelope; `wrap=False` writes the flat list |
+| `export_all(save, map_config=None, cluster=None)` | `dict[str, list[dict]]` | All seven exports keyed by ASV filename stem. `cluster` accepts a directory path or pre-loaded `CloudInventory` iterable; splices cluster tames into `ASV_Tamed` and cluster items into `ASV_Players[i].inventory` |
+| `export_cluster_uploads(cluster_inventories, map_config=None)` | `list[dict]` | Tamed-shape records for creatures stored in cluster `CloudInventory` files (decoded from `ArkTamedDinosData[].DinoData` blobs and `ArkItems[].CustomItemDatas` cryopod blobs) |
+| `export_cluster_items(cluster_inventories)` | `list[dict]` | Every uploaded item across the supplied cloud files, snake_case flat stats included |
+| `export_cloud_inventory(cloud, map_config=None)` | `dict[str, list[dict]]` | Standalone inspection of a single `CloudInventory`. Returns `{"ASV_Tamed": [...], "ASV_Items": [...]}` for staff tools that need to see one user's obelisk file without worldsave context |
+| `export_to_files(save, output_dir, map_config=None, wrap=True, cluster=None, compact=False)` | `list[Path]` | Writes each export to `<dir>/<ASV_Name>.json`. `wrap=True` (default) emits the legacy `{map, day, time, data}` envelope; `wrap=False` writes the flat list |
 
 Schema policy:
 
