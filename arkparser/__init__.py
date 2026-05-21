@@ -36,6 +36,8 @@ from arkparser.data_models import (
 )
 from arkparser.export import (
     export_all,
+    export_cloud_inventory,
+    export_cluster_items,
     export_cluster_uploads,
     export_map_structures,
     export_players,
@@ -82,6 +84,8 @@ __all__ = [
     "export_tribe_logs",
     "export_map_structures",
     "export_cluster_uploads",
+    "export_cluster_items",
+    "export_cloud_inventory",
     "export_to_files",
     # Utilities
     "detect_format",
@@ -91,4 +95,4 @@ __all__ = [
     "ArkParseError",
 ]
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"
