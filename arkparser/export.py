@@ -771,12 +771,55 @@ def _tamed_dict(
 
 
 def export_tamed(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
+    """Emit ASV_Tamed records.
+
+    Pre-conditions: ``save`` exposes ``get_tamed_creatures()`` (in-world
+    tames) and ideally ``iter_cryopod_creatures()`` (creatures whose actor
+    has been removed from the world and re-embedded inside a cryopod /
+    soultrap / vivarium / dinoball item).
+
+    Post-conditions: returned list combines (a) every in-world tame and
+    (b) every cryopod-embedded tame, with the latter carrying ``cryo=True``
+    and inheriting the cryopod item's world location for GPS fields.
+    """
     objects = _world_objects(save, "get_tamed_creatures", "tamed_objects")
     lookup = _save_lookup(save)
-    return [
+    results: list[dict[str, t.Any]] = [
         _tamed_dict(obj, _status_for(obj, lookup), lookup, map_config, save)
         for obj in objects
     ]
+    results.extend(_export_world_cryopods(save, map_config))
+    return results
+
+
+def _export_world_cryopods(
+    save: t.Any,
+    map_config: MapConfig | None,
+) -> list[dict[str, t.Any]]:
+    """Build ASV_Tamed records for cryopod-embedded creatures on the map.
+
+    ARK strips the actor for any creature stuffed into a cryopod / soultrap
+    / vivarium / dinoball and serialises a snapshot into the item's
+    ``CustomItemDatas``. ``get_tamed_creatures()`` therefore misses them
+    entirely. We walk ``iter_cryopod_creatures()`` (when available),
+    decode each embedded blob, and produce ``ASV_Tamed`` entries with
+    ``cryo=True`` and the cryopod item's location.
+    """
+    iter_cryos = getattr(save, "iter_cryopod_creatures", None)
+    if not callable(iter_cryos):
+        return []
+    out: list[dict[str, t.Any]] = []
+    empty_lookup: dict[t.Any, t.Any] = {}
+    for item_obj, cryo in iter_cryos():
+        actor, status = _cryo_props_to_synthetic(cryo)
+        # Inherit the cryopod's world location so GPS fields populate.
+        actor.location = getattr(item_obj, "location", None)
+        record = _tamed_dict(actor, status, empty_lookup, map_config, save)
+        # The synthetic actor carries no IsInCryo property; force the legacy
+        # flag so consumers can distinguish in-world tames from stored ones.
+        record["cryo"] = True
+        out.append(record)
+    return out
 
 
 class _SyntheticGameObject:

@@ -547,20 +547,29 @@ class CryopodCreature:
             ]
 
             if len(floats) >= 22:
-                # Determine offset based on array length
-                # ASA has 36 floats with offset 11, ASE has 25 floats with offset 12
-                max_offset = 11 if len(floats) >= 36 else 12
+                # ASA cryopod blob: 11 current stats + 11 max stats + extras (36 floats).
+                # ASE cryopod blob: 12 current stats + 12 max stats + 1 extra (25 floats).
+                # Without the per-format count, the ASA loop walks 12 names against an
+                # 11-wide current block, leaking max[0] (which equals current[0] at full
+                # HP) into current_stats["CraftingSkill"] and surfacing hp=craft on every
+                # cryopod tame in exports.
+                if len(floats) >= 36:
+                    current_count = 11
+                    max_offset = 11
+                else:
+                    current_count = 12
+                    max_offset = 12
 
-                # Current stats start at 0
-                for i, stat_name in enumerate(stat_names):
+                # Current stats: only consume the per-format slot count
+                for i in range(min(current_count, len(stat_names))):
                     if i < len(floats):
-                        cryo.current_stats[stat_name] = floats[i]
+                        cryo.current_stats[stat_names[i]] = floats[i]
 
-                # Max stats start at offset
-                for i, stat_name in enumerate(stat_names):
+                # Max stats: same count, starting at offset
+                for i in range(min(current_count, len(stat_names))):
                     max_idx = i + max_offset
                     if max_idx < len(floats):
-                        cryo.max_stats[stat_name] = floats[max_idx]
+                        cryo.max_stats[stat_names[i]] = floats[max_idx]
 
             # Parse soft class for blueprint reference
             soft_classes = normalize_indexed_list(custom_data.get("CustomDataSoftClasses"))
@@ -568,6 +577,32 @@ class CryopodCreature:
                 first_class = soft_classes[0]
                 if isinstance(first_class, dict):
                     cryo.class_name = first_class.get("name", cryo.class_name)
+
+            # Populate raw creature_props / status_props so the export
+            # pipeline's _SyntheticGameObject adapter (which calls
+            # ``get_property_value``) sees the fields it expects. ARK
+            # cryopod CustomItemDatas blobs only carry a small subset of
+            # the original creature properties (no DinoID, no TribeID, no
+            # tamer string, etc.) — surface what we have, leave the rest
+            # absent so consumers can detect the gap.
+            _stat_to_idx = {
+                "Health": 0, "Stamina": 1, "Torpidity": 2, "Oxygen": 3,
+                "Food": 4, "Water": 5, "Temperature": 6, "Weight": 7,
+                "MeleeDamage": 8, "MovementSpeed": 9, "Fortitude": 10,
+                "CraftingSkill": 11,
+            }
+            if cryo.name:
+                cryo.creature_props["TamedName"] = cryo.name
+            for i, color in enumerate(cryo.colors[:6]):
+                cryo.creature_props[f"ColorSetIndices_{i}" if i > 0 else "ColorSetIndices"] = color
+            if cryo.level:
+                cryo.status_props["BaseCharacterLevel"] = cryo.level
+            for stat_name, value in cryo.current_stats.items():
+                idx = _stat_to_idx.get(stat_name)
+                if idx is None:
+                    continue
+                key = "CurrentStatusValues" if idx == 0 else f"CurrentStatusValues_{idx}"
+                cryo.status_props[key] = value
 
             return cryo
 

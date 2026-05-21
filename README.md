@@ -176,7 +176,7 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 | `hp-m` .. `fort-m` (all 12) | added | `NumberOfMutationsAppliedTamed[i]` (mutation point counts per stat) |
 | `c0` .. `c5` | legacy | `ColorSetIndices[i]` |
 | `mut-f`, `mut-m` | legacy | **Ancestor-line totals.** `RandomMutationsFemale` and `RandomMutationsMale` — single integers counting the total number of mutations that occurred down the maternal and paternal ancestry lines respectively. These are *not* per-stat — they share the `-m` token with the per-stat mutation block below but mean a different thing. Kept under the legacy names for ASVExport parity. |
-| `cryo` | legacy | `IsInCryo` |
+| `cryo` | legacy | `True` for creatures embedded inside cryopod / soultrap / vivarium / dinoball items in the world save, `False` for actor-in-world tames. `export_tamed` walks `WorldSave.iter_cryopod_creatures()` and emits one ASV_Tamed record per embedded creature in addition to the actor-in-world tames; on busy PvE servers cryopodded tames are the majority of the roster (e.g. 10,277 of 11,054 on a live Ragnarok_WP). Cluster-uploaded tames also surface here (via `export_cluster_uploads`) with `cryo=True`. |
 | `ccc` | legacy | `"{x} {y} {z}"` from `LocationData` |
 | `dinoid` | legacy | string form of `id` |
 | `isMating` | legacy | `bEnableTamedMating` |
