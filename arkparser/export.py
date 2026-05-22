@@ -1723,7 +1723,7 @@ def _tribe_members_from_parser(
         profile = profile_index.get(pid) if profile_index else None
         out.append({
             "ign": _str(m.get("name")),
-            "lvl": profile.level if profile is not None else "",
+            "lvl": int(profile.level) if profile is not None else 0,
             "playerid": str(pid),
             "playername": _str(m.get("name")),
             "steamid": (profile.unique_id or "") if profile is not None else "",
@@ -1828,7 +1828,7 @@ def _tribe_from_object(
         profile = profile_index.get(pid_int) if profile_index else None
         members.append({
             "ign": name,
-            "lvl": profile.level if profile is not None else "",
+            "lvl": int(profile.level) if profile is not None else 0,
             "playerid": str(pid_int),
             "playername": name,
             "steamid": (profile.unique_id or "") if profile is not None else "",
