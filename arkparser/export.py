@@ -655,6 +655,7 @@ _EGG_ONLY_FIELDS: frozenset[str] = frozenset({
     "egg_random_mutations_female",
     "egg_random_mutations_male",
     "egg_number_mutations_applied",
+    "egg_number_of_mutations_applied",  # "NumberOf" variant (matches EggNumberOfLevelUpPointsApplied naming)
     "egg_dino_gene_traits",
 })
 
@@ -711,7 +712,10 @@ def _is_default(key: str, value: t.Any) -> bool:
             a == b for a, b in zip(value, default)
         )
     if isinstance(default, dict) and isinstance(value, dict):
-        return all(value.get(k, 0) == v for k, v in default.items())
+        # Vector structs are sometimes keyed X/Y/Z (ASA) instead of x/y/z;
+        # compare case-insensitively so a zero drop_location still prunes.
+        lowered = {str(k).lower(): v for k, v in value.items()}
+        return all(lowered.get(k, 0) == v for k, v in default.items())
     return value == default
 
 
@@ -732,7 +736,10 @@ def _flatten_color_array(value: t.Any) -> dict[str, int]:
         return out
     for idx, v in iterable:
         if 0 <= idx < 6 and v:
-            out[f"c{idx}"] = int(v)
+            try:
+                out[f"c{idx}"] = int(v)
+            except (TypeError, ValueError):
+                continue  # struct-valued color (LinearColor) etc; not a palette index
     return out
 
 # ARK universal 8-slot ItemStatValues map. Each slot is raw uint16; the
@@ -778,14 +785,27 @@ _STAT_NAME_ALIASES: dict[str, str] = {
 
 
 def _combine_item_id(value: t.Any) -> str | None:
-    """Combine ItemID struct ``{ItemID1, ItemID2}`` to single string."""
+    """Combine ItemID struct ``{ItemID1, ItemID2}`` to single string.
+
+    Uses explicit ``is None`` fallback (not ``or``) so a legitimate
+    ``ItemID1 == 0`` is not silently replaced by an ``ItemID1_0`` variant
+    key. Non-numeric / corrupt id components return ``None`` rather than
+    raising and aborting the whole inventory export.
+    """
     if not isinstance(value, dict):
         return None
-    id1 = value.get("ItemID1") or value.get("ItemID1_0")
-    id2 = value.get("ItemID2") or value.get("ItemID2_0")
+    id1 = value.get("ItemID1")
+    if id1 is None:
+        id1 = value.get("ItemID1_0")
+    id2 = value.get("ItemID2")
+    if id2 is None:
+        id2 = value.get("ItemID2_0")
     if id1 is None and id2 is None:
         return None
-    return f"{int(id1 or 0)}_{int(id2 or 0)}"
+    try:
+        return f"{int(id1 or 0)}_{int(id2 or 0)}"
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_stat_value(name: str, value: t.Any) -> t.Any:
@@ -832,14 +852,40 @@ def _apply_stat_aliases(
         if _is_default(alias, val):
             continue
         out[alias] = val
+    out.update(_expand_stat_slots(raw_slot_values))
+    return out
+
+
+def _expand_stat_slots(raw_slot_values: t.Any) -> dict[str, t.Any]:
+    """Map raw ItemStatValues to named slots, accepting either input shape.
+
+    Two shapes occur in practice:
+
+    - GameObject inventory path → a sparse ``{index: value}`` dict (see
+      :func:`_indexed_property_map`, which preserves the index even for a
+      single populated slot).
+    - Cloud / uploaded path → a dense 8-element ``list`` indexed 0..7
+      (``normalize_indexed_data`` collapses the indexed property to a list).
+
+    Anything else (a bare scalar from an upstream single-entry collapse that
+    lost its index) carries no recoverable slot and is ignored. Raw 0 means
+    "no stat roll", so zero slots are skipped.
+    """
+    pairs: t.Iterable[tuple[t.Any, t.Any]]
     if isinstance(raw_slot_values, dict):
-        for k, v in raw_slot_values.items():
-            try:
-                idx = int(k)
-            except (TypeError, ValueError):
-                continue
-            if 0 <= idx < len(_ITEM_STAT_SLOT_NAMES) and v is not None:
-                out[_ITEM_STAT_SLOT_NAMES[idx]] = v
+        pairs = raw_slot_values.items()
+    elif isinstance(raw_slot_values, list):
+        pairs = enumerate(raw_slot_values)
+    else:
+        return {}
+    out: dict[str, t.Any] = {}
+    for k, v in pairs:
+        try:
+            idx = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= idx < len(_ITEM_STAT_SLOT_NAMES) and v:
+            out[_ITEM_STAT_SLOT_NAMES[idx]] = v
     return out
 
 _PASCAL_SNAKE_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
@@ -850,6 +896,27 @@ def _pascal_to_snake(name: str) -> str:
     """``ItemStatValues`` → ``item_stat_values``, ``bIsBlueprint`` → ``b_is_blueprint``."""
     s = _PASCAL_SNAKE_RE_1.sub(r"\1_\2", name)
     return _PASCAL_SNAKE_RE_2.sub(r"\1_\2", s).lower()
+
+
+def _indexed_property_map(item_obj: t.Any, prop_name: str) -> dict[int, t.Any]:
+    """Read a multi-index property as ``{index: value}`` straight from the object.
+
+    ``_serialize_properties`` collapses a single-entry non-Byte property group
+    to a bare scalar, which destroys the slot index for indexed arrays such as
+    ``ItemStatValues`` / ``ItemColorID`` (an item with only one populated stat
+    slot would otherwise lose both the value and which slot it was). Reading the
+    raw ``Property`` list keeps every index, mirroring :func:`_colors`.
+    """
+    getter = getattr(item_obj, "get_properties_by_name", None)
+    if not callable(getter):
+        return {}
+    out: dict[int, t.Any] = {}
+    for prop in getter(prop_name):
+        idx = int(getattr(prop, "index", 0) or 0)
+        val = getattr(prop, "value", None)
+        if val is not None:
+            out[idx] = val
+    return out
 
 
 def _item_stats_dict(item_obj: t.Any, item_class: str = "") -> dict[str, t.Any]:
@@ -880,6 +947,16 @@ def _item_stats_dict(item_obj: t.Any, item_class: str = "") -> dict[str, t.Any]:
             continue
         snake = _pascal_to_snake(name)
         pre[snake] = _normalize_stat_value(snake, value)
+    # ItemStatValues / ItemColorID are indexed UInt16 arrays. _serialize_properties
+    # collapses a single populated slot to a bare scalar (losing the index), so
+    # re-read them straight from the object to preserve {index: value}; a
+    # single-stat saddle/weapon would otherwise drop its only roll.
+    isv = _indexed_property_map(item_obj, "ItemStatValues")
+    if isv:
+        pre["item_stat_values"] = isv
+    color = _indexed_property_map(item_obj, "ItemColorID")
+    if color:
+        pre["item_color_id"] = color
     return _apply_stat_aliases(pre, item_class=item_class)
 
 
@@ -1231,6 +1308,38 @@ def _cryo_props_to_synthetic(
     return actor, status
 
 
+def _cryo_tamed_record(
+    cryo: CryopodCreature,
+    map_config: MapConfig | None,
+    empty_lookup: dict[t.Any, t.Any],
+) -> dict[str, t.Any]:
+    """Decode one cryopod blob into a tamed record flagged ``cryo=True``."""
+    actor, status = _cryo_props_to_synthetic(cryo)
+    record = _tamed_dict(actor, status, empty_lookup, map_config)
+    record["cryo"] = True
+    return record
+
+
+def _append_unique_tame(
+    out: list[dict[str, t.Any]],
+    seen_ids: set[int],
+    record: dict[str, t.Any],
+) -> None:
+    """Append ``record`` unless a tame with the same non-zero dino id is present.
+
+    Cluster cryopods can land in either ``ArkTamedDinosData`` or ``ArkItems``;
+    a creature present in both would otherwise be emitted twice. Records whose
+    dino id is 0 (unresolved, common on ASA partial decodes) are never deduped
+    so distinct unidentified tames are all preserved.
+    """
+    did = _int(record.get("dinoid"))
+    if did and did in seen_ids:
+        return
+    if did:
+        seen_ids.add(did)
+    out.append(record)
+
+
 def export_cluster_uploads(
     cluster_inventories: t.Iterable[CloudInventory],
     map_config: MapConfig | None = None,
@@ -1258,6 +1367,7 @@ def export_cluster_uploads(
         always stored in cryopods).
     """
     out: list[dict[str, t.Any]] = []
+    seen_ids: set[int] = set()
     empty_lookup: dict[t.Any, t.Any] = {}
     for inv in cluster_inventories:
         my_ark_data = normalize_indexed_data(inv.get_property_value("MyArkData"))
@@ -1281,10 +1391,7 @@ def export_cluster_uploads(
             cryo = CryopodCreature.from_cryopod_bytes(byte_arr)
             if cryo is None:
                 continue
-            actor, status = _cryo_props_to_synthetic(cryo)
-            record = _tamed_dict(actor, status, empty_lookup, map_config)
-            record["cryo"] = True
-            out.append(record)
+            _append_unique_tame(out, seen_ids, _cryo_tamed_record(cryo, map_config, empty_lookup))
         # Cryopods uploaded as items (rare but present, especially in ASA
         # tribute transfers) embed a CryopodCreature in CustomItemDatas.
         for item in inv.uploaded_items:
@@ -1293,10 +1400,7 @@ def export_cluster_uploads(
             cryo = item.cryopod_creature
             if cryo is None:
                 continue
-            actor, status = _cryo_props_to_synthetic(cryo)
-            record = _tamed_dict(actor, status, empty_lookup, map_config)
-            record["cryo"] = True
-            out.append(record)
+            _append_unique_tame(out, seen_ids, _cryo_tamed_record(cryo, map_config, empty_lookup))
     return out
 
 
@@ -1349,12 +1453,14 @@ def _uploaded_item_dict(item: t.Any) -> dict[str, t.Any]:
         entry.update(_apply_stat_aliases(pre, item_class=class_name))
     upload_time = item.upload_time
     if upload_time:
+        # Key name matches the legacy ASV item schema (uploadedTime), which
+        # downstream consumers use as the "is uploaded" discriminator.
         try:
-            entry["upload_time"] = dt.datetime.fromtimestamp(
+            entry["uploadedTime"] = dt.datetime.fromtimestamp(
                 float(upload_time), tz=dt.timezone.utc
             ).isoformat()
-        except (OverflowError, OSError, ValueError):
-            entry["upload_time"] = upload_time
+        except (OverflowError, OSError, ValueError, TypeError):
+            entry["uploadedTime"] = upload_time
     return entry
 
 
@@ -1383,9 +1489,10 @@ def export_cluster_items(
 ) -> list[dict[str, t.Any]]:
     """Export every uploaded item across the supplied cloud inventories.
 
-    Each item carries its own snake_case ``stats`` subdict surfacing the
-    full ``ArkTributeItem`` payload (damage, durability, crafter info,
-    etc). Cryopod items also include ``dino_*`` keys with the embedded
+    Each item carries its snake_case stats flattened in at the top level
+    (``itemId``/``qty``/``blueprint`` plus ``armor``/``durability_max``/
+    ``damage``/``rating``/``crafter`` etc) surfacing the full
+    ``ArkTributeItem`` payload. Cryopod items also include ``dino_*`` keys with the embedded
     creature's identifying info; the dino's full stats record is emitted
     by :func:`export_cluster_uploads`.
     """
@@ -1409,8 +1516,8 @@ def export_cloud_inventory(
     - ``ASV_Tamed``: every dino in the file (both ``ArkTamedDinosData``
       entries and cryopod items in ``ArkItems``), shaped like a regular
       tamed record so consumers can reuse existing rendering.
-    - ``ASV_Items``: every uploaded item, snake_case ``stats`` subdict
-      included.
+    - ``ASV_Items``: every uploaded item, snake_case stats flattened in
+      at the top level (see :func:`export_cluster_items`).
 
     Useful for inspecting a single user's cluster transfer file in
     isolation, without scanning a whole cluster directory.
@@ -1623,9 +1730,11 @@ def _cluster_items_by_xuid(
     """Group uploaded items by cloud-file stem (= player's unique_id / xuid).
 
     Each cluster file is named after the owning player's Steam id (ASE) or
-    platform UUID (ASA). The file stem matches ``Profile.unique_id`` for
-    that player, giving a stable join key without needing to crack any
-    in-file ownership data.
+    platform UUID (ASA). That same stem names the player's ``.arkprofile``,
+    so :func:`export_players` joins on the profile's source filename stem
+    (see there) — a stable key on both platforms without cracking any
+    in-file ownership data. (``Profile.unique_id`` equals the stem only on
+    ASE; on ASA it is the numeric net id, not the UUID filename.)
     """
     out: dict[str, list[dict[str, t.Any]]] = {}
     for inv in cluster_inventories:
@@ -1658,8 +1767,19 @@ def export_players(
     results: list[dict[str, t.Any]] = []
     for entry in profiles:
         record: dict[str, t.Any]
+        # Keys to match against the cloud-file stem, in priority order.
+        join_keys: list[str] = []
         if isinstance(entry, Profile):
             record = _player_from_profile(entry, save, pawn_status_by_id)
+            # The cloud file and the .arkprofile for one player share a stem:
+            # the Steam id on ASE, the hex platform UUID on ASA. The profile's
+            # own source filename stem is therefore the reliable cross-platform
+            # join key. ``unique_id`` only equals it on ASE (on ASA it is the
+            # numeric net id, not the UUID filename), so it is a fallback.
+            if entry.source_path is not None and entry.source_path.stem:
+                join_keys.append(entry.source_path.stem)
+            if entry.unique_id:
+                join_keys.append(entry.unique_id)
         else:
             profile_obj = getattr(entry, "profile", None)
             if profile_obj is None and getattr(entry, "objects", None):
@@ -1673,17 +1793,19 @@ def export_players(
                     status_obj = o
                     break
             record = _player_from_object(profile_obj, status_obj, lookup, map_config, save)
+            sid = record.get("steamid")
+            if sid:
+                join_keys.append(str(sid))
         # Splice cluster-uploaded items into the player's inventory list,
         # tagged ``uploaded: true`` so consumers can distinguish them from
-        # carried items. Matched by the cloud file's stem == profile's
-        # unique_id (Steam id / platform UUID).
-        steam_id = record.get("steamid") or ""
-        if steam_id and steam_id in cluster_items:
+        # carried items.
+        spliced = next((cluster_items[k] for k in join_keys if k in cluster_items), None)
+        if spliced:
             inv_list = record.get("inventory")
             if not isinstance(inv_list, list):
                 inv_list = []
                 record["inventory"] = inv_list
-            inv_list.extend(cluster_items[steam_id])
+            inv_list.extend(spliced)
         results.append(record)
     return results
 
