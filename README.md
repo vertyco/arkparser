@@ -376,11 +376,11 @@ data = export_all(save, map_config, cluster="path/to/cluster")
 # data["ASV_Tamed"]   - now includes cluster cryopod tames (cryo=True)
 # data["ASV_Players"] - each player's inventory now contains their
 #                       uploaded items (entries tagged "uploaded": true),
-#                       matched by cloud-file stem (xuid) ==
-#                       Profile.unique_id.
+#                       matched by cloud-file stem == the player's
+#                       .arkprofile filename stem.
 ```
 
-Cluster items are spliced into the owning player's `inventory`; no separate `ASV_ClusterItems` file is emitted. The match works because every cluster file is named after the owning player's Steam id / platform UUID, which is the same value as `Profile.unique_id`.
+Cluster items are spliced into the owning player's `inventory`; no separate `ASV_ClusterItems` file is emitted. The match works because every cluster file and the player's `.arkprofile` share a stem — the Steam id on ASE, the hex platform UUID on ASA — so the join is keyed on the profile's source filename stem. (`Profile.unique_id` equals that stem only on ASE; on ASA it is the numeric net id, not the UUID filename, so loading profiles from real file paths — which sets `Profile.source_path` — is required for the ASA splice.)
 
 Pre-loaded `CloudInventory` instances also work (`cluster=[inv1, inv2, ...]`).
 
@@ -402,7 +402,7 @@ data = export_cloud_inventory(cloud)
 # }
 ```
 
-Each `ASV_Items` entry carries `itemId`, `qty`, `blueprint`, `id` (combined ItemID1_ItemID2), `upload_time` (ISO 8601 with UTC offset), and item-class-specific stats (`durability_max`, `damage`, `armor`, `hypo`, `hyper`, `crafter`, `crafter_tribe`, `skill_bonus`, `loaded_ammo`, `quality`, `rating`, `c0`..`c5` paint regions, `drop_location`, `egg_*` for fertilized eggs, `dino_*` for cryopod items, etc). Default / unset fields are filtered, NaN floats dropped, `"Unknown"` crafter strings nulled.
+Each `ASV_Items` entry carries `itemId`, `qty`, `blueprint`, `id` (combined ItemID1_ItemID2), `uploadedTime` (ISO 8601 with UTC offset), and item-class-specific stats (`durability_max`, `damage`, `armor`, `hypo`, `hyper`, `crafter`, `crafter_tribe`, `skill_bonus`, `loaded_ammo`, `quality`, `rating`, `c0`..`c5` paint regions, `drop_location`, `egg_*` for fertilized eggs, `dino_*` for cryopod items, etc). Default / unset fields are filtered, NaN floats dropped, `"Unknown"` crafter strings nulled.
 
 The low-level helpers are also available:
 - `export_cluster_uploads(cluster_invs, map_config=None) -> list[dict]` &mdash; tamed-shape records (incl. cryopod-as-item dinos) across the supplied cloud files
@@ -555,7 +555,7 @@ All four expose `from_*` constructors and `to_dict()` for serialization.
 |---|---|---|
 | `export_tamed(save, map_config=None)` | `list[dict]` | `ASV_Tamed` records |
 | `export_wild(save, map_config=None)` | `list[dict]` | `ASV_Wild` records |
-| `export_players(save, map_config=None, cluster_inventories=None)` | `list[dict]` | `ASV_Players` records (from Profile parsers). Pass `cluster_inventories` to splice each player's uploaded items into their `inventory` (entries tagged `uploaded: true`, matched by xuid stem == `Profile.unique_id`) |
+| `export_players(save, map_config=None, cluster_inventories=None)` | `list[dict]` | `ASV_Players` records (from Profile parsers). Pass `cluster_inventories` to splice each player's uploaded items into their `inventory` (entries tagged `uploaded: true`, matched by cloud-file stem == the player's `.arkprofile` filename stem) |
 | `export_tribes(save)` | `list[dict]` | `ASV_Tribes` records |
 | `export_structures(save, map_config=None)` | `list[dict]` | `ASV_Structures` records |
 | `export_tribe_logs(save)` | `list[dict]` | `ASV_TribeLogs` records |
