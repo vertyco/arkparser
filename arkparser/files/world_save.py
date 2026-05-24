@@ -151,6 +151,13 @@ class WorldSave:
     # ASA-specific
     actor_locations: dict[str, LocationData] = field(default_factory=dict)
 
+    # Caller-assembled sidecars (NOT parsed from the .ark): the orchestrator
+    # globs the map dir for *.arkprofile / *.arktribe and assigns these before
+    # calling export_all, which reads them to enrich player/tribe records.
+    # Default to empty lists so export still runs when no sidecars are loaded.
+    profiles: list[t.Any] = field(default_factory=list)
+    tribes: list[t.Any] = field(default_factory=list)
+
     # ------------------------------------------------------------------
     # Internal state
     # ------------------------------------------------------------------
