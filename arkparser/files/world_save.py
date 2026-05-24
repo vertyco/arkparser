@@ -642,14 +642,24 @@ class WorldSave:
         save.is_asa = True
         save._parse_errors = []
 
+        conn = None
         try:
             conn = sqlite3.connect(str(path))
             save._read_asa_header(conn)
-            save._read_asa_actor_locations(conn)
+            # Actor locations are positional enrichment, not load-critical. A
+            # malformed/padded ActorTransforms blob must not abort the whole
+            # save — record it and continue with object data only. (EndOfDataError
+            # subclasses ArkParseError, so this catches both.)
+            try:
+                save._read_asa_actor_locations(conn)
+            except ArkParseError as e:
+                save._parse_errors.append(f"ActorTransforms: {e}")
             save._read_asa_game_objects(conn, load_properties, max_objects)
-            conn.close()
         except sqlite3.Error as e:
             raise ArkParseError(f"SQLite error reading ASA world save: {e}")
+        finally:
+            if conn is not None:
+                conn.close()
 
         save.container = GameObjectContainer(objects=save.objects)
         save.container.build_relationships()
@@ -721,7 +731,10 @@ class WorldSave:
         reader = BinaryReader.from_bytes(row[0])
         self.actor_locations = {}
 
-        while reader.remaining >= 16:
+        # Each record is exactly 72 bytes: 16 (GUID) + 6*8 (xyz + pitch/yaw/roll)
+        # + 8 (pad). Guard on the full record size so a non-72-aligned tail can't
+        # underflow mid-record and raise instead of stopping cleanly.
+        while reader.remaining >= 72:
             guid_bytes = reader.read_bytes(16)
             if all(b == 0 for b in guid_bytes):
                 break

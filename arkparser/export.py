@@ -33,14 +33,19 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
+import math
 import re
 import typing as t
 from pathlib import Path
 
+from arkparser.common.exceptions import ArkParseError
 from arkparser.common.map_config import MapConfig
 from arkparser.common.normalization import normalize_indexed_data, normalize_indexed_list
 from arkparser.data_models import CryopodCreature
 from arkparser.files import CloudInventory, Profile, Tribe
+
+logger = logging.getLogger(__name__)
 
 _CRYOPOD_CLASS_PATTERNS: tuple[str, ...] = (
     "Cryopod", "SoulTrap", "Vivarium", "DinoBall",
@@ -122,9 +127,12 @@ def _float(val: t.Any, default: float = 0.0) -> float:
     if val is None or val is False:
         return default
     try:
-        return float(val)
+        result = float(val)
     except (TypeError, ValueError):
         return default
+    # inf/nan (corrupt or extreme bit patterns) are not valid JSON tokens and
+    # crash strict downstream parsers (JS JSON.parse, Pydantic). Coerce to default.
+    return result if math.isfinite(result) else default
 
 
 def _str(val: t.Any) -> str:
@@ -285,17 +293,19 @@ def _gps_payload(
     loc = getattr(obj, "location", None)
     if loc is None:
         return {"ccc": "0 0 0", "lat": 0.0, "lon": 0.0}
-    x = getattr(loc, "x", 0.0) or 0.0
-    y = getattr(loc, "y", 0.0) or 0.0
-    z = getattr(loc, "z", 0.0) or 0.0
+    # _float coerces non-finite (inf/nan) coords to 0.0 — those are invalid
+    # JSON tokens that crash strict downstream parsers.
+    x = _float(getattr(loc, "x", 0.0))
+    y = _float(getattr(loc, "y", 0.0))
+    z = _float(getattr(loc, "z", 0.0))
     if ndigits is not None:
         x = round(x, ndigits)
         y = round(y, ndigits)
         z = round(z, ndigits)
     out: dict[str, t.Any] = {"ccc": f"{x} {y} {z}"}
     if map_config is not None:
-        lat = float(map_config.ue_to_lat(y))
-        lon = float(map_config.ue_to_lon(x))
+        lat = _float(map_config.ue_to_lat(y))
+        lon = _float(map_config.ue_to_lon(x))
         if ndigits is not None:
             lat = round(lat, ndigits)
             lon = round(lon, ndigits)
@@ -331,9 +341,11 @@ def _approx_real_datetime(
         return None
     try:
         offset = float(in_game_time) - game_time
-    except (TypeError, ValueError):
+        return mtime + dt.timedelta(seconds=offset)
+    except (TypeError, ValueError, OverflowError, OSError):
+        # Mirror legacy GetApproxDateTimeOf's try/catch: a garbage/huge in-game
+        # time overflows datetime arithmetic — legacy returns null, so do we.
         return None
-    return mtime + dt.timedelta(seconds=offset)
 
 
 def _combine_dino_id(id1: t.Any, id2: t.Any) -> int:
@@ -672,7 +684,7 @@ def _is_meaningful_value(value: t.Any) -> bool:
         return False
     if isinstance(value, (list, dict, str)) and len(value) == 0:
         return False
-    if isinstance(value, float) and value != value:  # NaN
+    if isinstance(value, float) and not math.isfinite(value):  # NaN or +/-inf
         return False
     if isinstance(value, str) and value == "Unknown":
         return False
@@ -1033,6 +1045,7 @@ def _tamed_dict(
     lookup: dict[t.Any, t.Any],
     map_config: MapConfig | None,
     save: t.Any = None,
+    stored: bool = False,
 ) -> dict[str, t.Any]:
     base_pts = _stat_array(status, "NumberOfLevelUpPointsApplied")
     tamed_pts = _stat_array(status, "NumberOfLevelUpPointsAppliedTamed")
@@ -1040,6 +1053,22 @@ def _tamed_dict(
     base_level = _int(_prop(status, "BaseCharacterLevel"), default=1) or 1
     extra_level = _int(_prop(status, "ExtraCharacterLevel"))
     dino_id = _combine_dino_id(_prop(obj, "DinoID1"), _prop(obj, "DinoID2"))
+    # Legacy negates the id of stored (cryo/vivarium) creatures so they don't
+    # collide with live tames (ContentTamedCreature.cs:122-126/228-232). The
+    # dinoid field stays positive (C# sets DinoId = Id.ToString() before negating).
+    is_stored = (
+        stored
+        or bool(_prop(obj, "IsInCryo", default=False))
+        or bool(_prop(obj, "IsInVivarium", default=False))
+    )
+    display_id = -dino_id if (is_stored and dino_id != 0) else dino_id
+    # Legacy blanks the tamer once a creature is imprinted (ContentTamedCreature
+    # .cs:109-114/215-220): imprinted dinos report an imprinter, not a tamer.
+    imprinter_player_id = _int(_prop(obj, "ImprinterPlayerDataID"))
+    imprinter_name = _str(_prop(obj, "ImprinterName"))
+    tamer = _str(_prop(obj, "TamerString"))
+    if imprinter_player_id > 0 or imprinter_name:
+        tamer = ""
     colors = _colors(obj)
     is_female = bool(_prop(obj, "bIsFemale", default=False))
     targeting_team = _int(_prop(obj, "TargetingTeam"))
@@ -1054,11 +1083,11 @@ def _tamed_dict(
     _, cuddle_iso = _iso_pair(obj, "BabyNextCuddleTime", save)
 
     data: dict[str, t.Any] = {
-        "id": dino_id,
+        "id": display_id,
         "tribeid": targeting_team,
         "tribe": tribe_name or None,
-        "tamer": _str(_prop(obj, "TamerString")),
-        "imprinter": _str(_prop(obj, "ImprinterName")),
+        "tamer": tamer,
+        "imprinter": imprinter_name,
         "imprint": _float(_prop(status, "DinoImprintingQuality")),
         "creature": getattr(obj, "class_name", "") or "",
         "name": _str(_prop(obj, "TamedName")),
@@ -1104,7 +1133,7 @@ def _tamed_dict(
             else None
         ),
         "current_stats": _current_stats_dict(status),
-        "imprinter_player_id": _int(_prop(obj, "ImprinterPlayerDataID")),
+        "imprinter_player_id": imprinter_player_id,
         "imprinter_net_id": _str(_prop(obj, "ImprinterPlayerUniqueNetId")),
         "taming_team_id": _int(_prop(obj, "TamingTeamID")),
         "owning_player_id": _int(_prop(obj, "OwningPlayerID")),
@@ -1251,7 +1280,7 @@ def _export_world_cryopods(
             for key, val in owner_info.items():
                 if val and not cryo.creature_props.get(key):
                     cryo.creature_props[key] = val
-        record = _tamed_dict(actor, status, empty_lookup, map_config, save)
+        record = _tamed_dict(actor, status, empty_lookup, map_config, save, stored=True)
         # The synthetic actor carries no IsInCryo property; force the legacy
         # flag so consumers can distinguish in-world tames from stored ones.
         record["cryo"] = True
@@ -1312,11 +1341,29 @@ def _cryo_tamed_record(
     cryo: CryopodCreature,
     map_config: MapConfig | None,
     empty_lookup: dict[t.Any, t.Any],
+    upload_time: int = 0,
 ) -> dict[str, t.Any]:
-    """Decode one cryopod blob into a tamed record flagged ``cryo=True``."""
+    """Decode one cryopod blob into a tamed record flagged ``cryo=True``.
+
+    ``upload_time`` (unix seconds; cluster uploads only) populates
+    ``uploadedTime`` to match legacy (ContentContainer.cs:387-389); 0 omits it.
+    """
     actor, status = _cryo_props_to_synthetic(cryo)
+    # Cluster-UPLOADED creatures are not cryo/vivarium in legacy terms (their
+    # IsInCryo is false), so legacy keeps their id positive — do NOT negate.
+    # Only genuine in-world cryopod/vivarium creatures negate, via
+    # _export_world_cryopods passing stored=True directly to _tamed_dict.
     record = _tamed_dict(actor, status, empty_lookup, map_config)
     record["cryo"] = True
+    ut = _int(upload_time)
+    if ut:
+        # uploadedTime doubles as the downstream "is uploaded" discriminator.
+        try:
+            record["uploadedTime"] = dt.datetime.fromtimestamp(
+                ut, tz=dt.timezone.utc
+            ).isoformat()
+        except (OverflowError, OSError, ValueError):
+            pass
     return record
 
 
@@ -1391,7 +1438,11 @@ def export_cluster_uploads(
             cryo = CryopodCreature.from_cryopod_bytes(byte_arr)
             if cryo is None:
                 continue
-            _append_unique_tame(out, seen_ids, _cryo_tamed_record(cryo, map_config, empty_lookup))
+            upload_time = _int(entry.get("UploadTime"))
+            _append_unique_tame(
+                out, seen_ids,
+                _cryo_tamed_record(cryo, map_config, empty_lookup, upload_time),
+            )
         # Cryopods uploaded as items (rare but present, especially in ASA
         # tribute transfers) embed a CryopodCreature in CustomItemDatas.
         for item in inv.uploaded_items:
@@ -1400,11 +1451,14 @@ def export_cluster_uploads(
             cryo = item.cryopod_creature
             if cryo is None:
                 continue
-            _append_unique_tame(out, seen_ids, _cryo_tamed_record(cryo, map_config, empty_lookup))
+            _append_unique_tame(
+                out, seen_ids,
+                _cryo_tamed_record(cryo, map_config, empty_lookup, _int(item.upload_time)),
+            )
     return out
 
 
-def _uploaded_item_dict(item: t.Any) -> dict[str, t.Any]:
+def _uploaded_item_dict(item: t.Any, save: t.Any = None) -> dict[str, t.Any]:
     """Shape a single ``UploadedItem`` as an inventory-style entry.
 
     Mirrors ``_inventory_items``: ``itemId``/``qty``/``blueprint`` at top,
@@ -1451,16 +1505,28 @@ def _uploaded_item_dict(item: t.Any) -> dict[str, t.Any]:
             snake = _pascal_to_snake(name)
             pre[snake] = _normalize_stat_value(snake, value)
         entry.update(_apply_stat_aliases(pre, item_class=class_name))
-    upload_time = item.upload_time
-    if upload_time:
-        # Key name matches the legacy ASV item schema (uploadedTime), which
-        # downstream consumers use as the "is uploaded" discriminator.
+    # Legacy derives item uploadedTime from the inner ArkTributeItem CreationTime
+    # via the in-game anchor file_mtime + (t - game_time) (ContentItem.cs:52 +
+    # ContentContainer.cs:301-303). ASA cluster items instead carry a real unix
+    # epoch in the outer UploadTime (CreationTime is 0), so fall back to that.
+    # Always emit an ISO string (never a raw int) so the field type is stable.
+    iso: str | None = None
+    creation_time = (
+        _float(ark_tribute.get("CreationTime")) if isinstance(ark_tribute, dict) else 0.0
+    )
+    if creation_time and save is not None:
+        anchored = _approx_real_datetime(creation_time, save)
+        if anchored is not None:
+            iso = anchored.isoformat()
+    if iso is None and item.upload_time:
         try:
-            entry["uploadedTime"] = dt.datetime.fromtimestamp(
-                float(upload_time), tz=dt.timezone.utc
+            iso = dt.datetime.fromtimestamp(
+                float(item.upload_time), tz=dt.timezone.utc
             ).isoformat()
         except (OverflowError, OSError, ValueError, TypeError):
-            entry["uploadedTime"] = upload_time
+            iso = None
+    if iso is not None:
+        entry["uploadedTime"] = iso
     return entry
 
 
@@ -1486,6 +1552,7 @@ def _is_placeholder_item(item: t.Any) -> bool:
 
 def export_cluster_items(
     cluster_inventories: t.Iterable[CloudInventory],
+    save: t.Any = None,
 ) -> list[dict[str, t.Any]]:
     """Export every uploaded item across the supplied cloud inventories.
 
@@ -1501,7 +1568,7 @@ def export_cluster_items(
         for item in inv.uploaded_items:
             if _is_placeholder_item(item):
                 continue
-            out.append(_uploaded_item_dict(item))
+            out.append(_uploaded_item_dict(item, save))
     return out
 
 
@@ -1726,6 +1793,7 @@ def _player_status_by_data_id(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[i
 
 def _cluster_items_by_xuid(
     cluster_inventories: t.Iterable[CloudInventory],
+    save: t.Any = None,
 ) -> dict[str, list[dict[str, t.Any]]]:
     """Group uploaded items by cloud-file stem (= player's unique_id / xuid).
 
@@ -1747,7 +1815,7 @@ def _cluster_items_by_xuid(
         for item in inv.uploaded_items:
             if _is_placeholder_item(item):
                 continue
-            entry = _uploaded_item_dict(item)
+            entry = _uploaded_item_dict(item, save)
             entry["uploaded"] = True
             bucket.append(entry)
     return out
@@ -1762,7 +1830,7 @@ def export_players(
     lookup = _save_lookup(save)
     pawn_status_by_id = _player_status_by_data_id(save, lookup)
     cluster_items = (
-        _cluster_items_by_xuid(cluster_inventories) if cluster_inventories else {}
+        _cluster_items_by_xuid(cluster_inventories, save) if cluster_inventories else {}
     )
     results: list[dict[str, t.Any]] = []
     for entry in profiles:
@@ -2303,7 +2371,11 @@ def _load_cluster_inventories(
                 continue
             try:
                 loaded.append(CloudInventory.load(entry))
-            except (OSError, ValueError, Exception):  # noqa: BLE001
+            except (OSError, ArkParseError) as e:
+                # Skip unreadable/corrupt cluster files but record which one —
+                # a silent drop hides every upload in that file and looks like
+                # the player simply has no uploads. Unexpected errors propagate.
+                logger.warning("Skipping cluster file %s: %s", entry, e)
                 continue
         return loaded
     return [inv for inv in cluster if isinstance(inv, CloudInventory)]
