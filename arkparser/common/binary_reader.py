@@ -242,9 +242,13 @@ class BinaryReader:
         if length == 0:
             return ""
         if length == 1:
+            if self._pos + 1 > self._size:
+                raise EndOfDataError(1, self._size - self._pos)
             self._pos += 1  # single null byte
             return ""
         if length == -1:
+            if self._pos + 2 > self._size:
+                raise EndOfDataError(2, self._size - self._pos)
             self._pos += 2  # UTF-16 null
             return ""
         if length < 0:

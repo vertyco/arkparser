@@ -472,7 +472,9 @@ class CryopodCreature:
         Both ASA and ASE store cryopod creature data using:
         - CustomDataStrings: [class_name, display_name, colors_str, ?, gender, ?, ?, ...]
           - ASE has 7 strings, ASA has 10+ strings (with species at index 9)
-        - CustomDataFloats: [current_stats x 12, max_stats x 12, ...]
+        - CustomDataFloats: ASE = [current x 12, max x 12, +1] (25); ASA = [current
+          x 11 (no CraftingSkill), max x 11, extras] (36). See the per-format
+          branch below — the layouts genuinely differ in current-stat width.
         - CustomDataNames: Color names for the 6 color regions
 
         Args:

@@ -12,12 +12,18 @@ import typing as t
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from ..common.exceptions import CorruptDataError
 from ..properties.registry import read_properties, read_property
 from .location import LocationData
 
 if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
     from ..properties.base import Property
+
+# Upper sanity bound for the ASE object-table count. Legitimate maps top out
+# in the low millions; a misaligned header decodes a garbage count (commonly a
+# negative int32 read as a ~4-billion uint), so anything past this is corruption.
+MAX_OBJECT_COUNT = 100_000_000
 
 
 @dataclass(slots=True)
@@ -69,6 +75,11 @@ class GameObject:
             if bucket is None:
                 idx[prop.name] = {prop.index: prop}
             else:
+                # First-writer wins, matching legacy C# GetPropertyValue
+                # (IPropertyContainer.cs:45) which returns the first (name,
+                # index) match. _serialize_properties keeps all occurrences in
+                # the additive `properties` dict; lookups intentionally mirror
+                # legacy here. Do not switch to last-wins.
                 bucket.setdefault(prop.index, prop)
         self._prop_index = idx
         return idx
@@ -163,7 +174,12 @@ class GameObject:
                 return True
             return False
         if prop.type_name == "ArrayProperty" and getattr(prop, "array_type", "") == "ObjectProperty":
-            return all(isinstance(v, (tuple, list)) and len(v) == 2 and v[0] == "id" for v in prop.value)
+            # all() over an empty list is True; require a non-empty value so an
+            # empty object-ref array is serialized rather than silently dropped.
+            return bool(prop.value) and all(
+                isinstance(v, (tuple, list)) and len(v) == 2 and v[0] == "id"
+                for v in prop.value
+            )
         return False
 
     @staticmethod
@@ -374,7 +390,12 @@ def read_object_list(
     Returns:
         List of GameObject instances with headers populated.
     """
-    count = reader.read_int32()
+    count = reader.read_uint32()
+    if count > MAX_OBJECT_COUNT:
+        raise CorruptDataError(
+            f"object count {count} exceeds maximum {MAX_OBJECT_COUNT} "
+            "(likely a misaligned object table header)"
+        )
     objects: list[GameObject] = []
 
     for i in range(count):

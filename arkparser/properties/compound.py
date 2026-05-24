@@ -13,6 +13,7 @@ import typing as t
 import uuid
 from dataclasses import dataclass, field
 
+from ..common.exceptions import UnknownPropertyError
 from ..structs import registry as struct_registry
 from .base import Property, PropertyHeader, read_name
 
@@ -552,9 +553,12 @@ def _read_array_elements(
                 else:
                     values.append(struct)
     else:
-        # Unknown array type - read as raw bytes
-        # We can't determine element size, so just note it
-        values.append(f"<UnknownArray({array_type}): {count} elements>")
+        # Unknown element type: element sizes are indeterminate, so reading on
+        # would desync the stream and corrupt every later property in this
+        # object. Raise instead of emitting a placeholder — callers parse each
+        # object in isolation (per-blob in ASA, per-offset in ASE) and record
+        # the failure, so the damage stays contained to this one object.
+        raise UnknownPropertyError(f"ArrayProperty element type {array_type!r}")
 
     return values
 
@@ -665,8 +669,11 @@ def _read_worldsave_array_elements(
             _padding = reader.read_int32()
             values.append(ref_name)
     else:
-        # Unknown type
-        values.append(f"<UnknownWorldSaveArray({element_type}): {count} elements>")
+        # Unknown element type: bail rather than desync the object stream (see
+        # _read_array_elements). The per-object parse guard contains the failure.
+        raise UnknownPropertyError(
+            f"WorldSave ArrayProperty element type {element_type!r}"
+        )
 
     return values
 
