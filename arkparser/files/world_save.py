@@ -31,11 +31,11 @@ from pathlib import Path
 from uuid import UUID
 
 from ..common.binary_reader import BinaryReader
-from ..common.exceptions import ArkParseError
+from ..common.exceptions import ArkParseError, CorruptDataError
 from ..common.normalization import normalize_indexed_data, normalize_indexed_list
 from ..data_models import CryopodCreature
 from ..game_objects.container import GameObjectContainer
-from ..game_objects.game_object import GameObject
+from ..game_objects.game_object import MAX_OBJECT_COUNT, GameObject
 from ..game_objects.location import LocationData
 from ..properties.registry import read_properties
 
@@ -48,6 +48,23 @@ _ZERO_GUID = b"\x00" * 16
 # A count above this means the read is misaligned (a garbage int32 length),
 # so we fail loudly instead of looping over ~billions of phantom entries.
 _MAX_ASA_NAME_TABLE = 1_000_000
+
+
+def _checked_count(reader: BinaryReader, label: str, maximum: int = MAX_OBJECT_COUNT) -> int:
+    """Read a length-prefix int32 and reject corrupt/implausible values.
+
+    Power-of-10 rule 2 (fixed loop bounds): every count that drives a read
+    loop must be provably bounded. A negative or absurd count means a
+    misaligned/corrupt header; raise ``CorruptDataError`` (NOT ``assert`` -
+    asserts vanish under ``python -O``) rather than looping over billions of
+    phantom entries (OOM/hang).
+    """
+    if reader.remaining < 4:
+        raise CorruptDataError(f"{label}: truncated before count int32")
+    count = reader.read_int32()
+    if not 0 <= count <= maximum:
+        raise CorruptDataError(f"{label}: implausible count {count} (corrupt/misaligned read)")
+    return count
 
 
 @dataclass
@@ -540,25 +557,25 @@ class WorldSave:
         saved = reader.position
         reader.position = self._name_table_offset
 
-        count = reader.read_int32()
+        count = _checked_count(reader, "ASE name table")
         self.name_table = [reader.read_string() for _ in range(count)]
 
         reader.position = saved
 
     def _read_ase_data_files(self, reader: BinaryReader) -> None:
-        count = reader.read_int32()
+        count = _checked_count(reader, "ASE data files")
         self.data_files = [reader.read_string() for _ in range(count)]
 
     def _read_ase_embedded_data(self, reader: BinaryReader) -> None:
-        count = reader.read_int32()
+        count = _checked_count(reader, "ASE embedded data")
         self.embedded_data = [EmbeddedData.read(reader) for _ in range(count)]
 
     def _read_ase_data_files_object_map(self, reader: BinaryReader) -> None:
-        count = reader.read_int32()
+        count = _checked_count(reader, "ASE data-files object map")
         self.data_files_object_map = {}
         for _ in range(count):
             level = reader.read_int32()
-            name_count = reader.read_int32()
+            name_count = _checked_count(reader, "ASE data-files object names")
             names = [reader.read_string() for _ in range(name_count)]
             self.data_files_object_map.setdefault(level, []).append(names)
 
@@ -613,7 +630,7 @@ class WorldSave:
         return obj
 
     def _read_ase_objects(self, reader: BinaryReader) -> None:
-        count = reader.read_int32()
+        count = _checked_count(reader, "ASE objects")
         self.objects = [self._read_ase_object_header(reader, i) for i in range(count)]
 
     def _read_ase_object_properties(self, reader: BinaryReader) -> None:
@@ -701,7 +718,7 @@ class WorldSave:
         _unknown2 = reader.read_int32()
 
         # Data files (immediately follow the header; populate self.data_files).
-        count = reader.read_int32()
+        count = _checked_count(reader, "ASA data files")
         self.data_files = []
         for _ in range(count):
             self.data_files.append(reader.read_string())
@@ -720,10 +737,12 @@ class WorldSave:
         # Where the gap is zero (TheIsland, Aberration, Extinction) the seek is
         # a no-op; where it drifts it recovers every leaked class name.
         if self.version >= 14:
-            assert 0 <= name_table_offset <= reader.size, (
-                f"ASA name-table offset {name_table_offset} out of range "
-                f"(blob size {reader.size})"
-            )
+            # Explicit raise (not assert) so the bound survives ``python -O``.
+            if not 0 <= name_table_offset <= reader.size:
+                raise CorruptDataError(
+                    f"ASA name-table offset {name_table_offset} out of range "
+                    f"(blob size {reader.size})"
+                )
             reader.position = name_table_offset
             self.name_table = self._read_asa_name_table(reader)
         else:
@@ -747,11 +766,7 @@ class WorldSave:
         user-placed-actor entries (``idx == 1``) on the v13 sequential path; it
         is unused on the v14 seek path.
         """
-        assert reader.remaining >= 4, "no room for ASA name-table count"
-        name_count = reader.read_int32()
-        assert 0 <= name_count <= _MAX_ASA_NAME_TABLE, (
-            f"implausible ASA name-table count {name_count} - misaligned read"
-        )
+        name_count = _checked_count(reader, "ASA name table", _MAX_ASA_NAME_TABLE)
         nt: dict[int, str] = {}
         for _ in range(name_count):
             idx = reader.read_int32()

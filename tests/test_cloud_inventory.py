@@ -4,7 +4,6 @@ Tests for cloud inventory (obelisk) parsing - both ASE and ASA formats.
 
 from pathlib import Path
 
-import pytest
 
 from arkparser import CloudInventory
 

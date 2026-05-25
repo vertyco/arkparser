@@ -355,6 +355,31 @@ def _combine_dino_id(id1: t.Any, id2: t.Any) -> int:
     return (a << 32) | (b & 0xFFFFFFFF)
 
 
+def _dino_id_str(id1: t.Any, id2: t.Any, is_asa: bool) -> str:
+    """Legacy ``dinoid`` string form (engine-dependent).
+
+    ASA emits the decimal of the combined 64-bit id (legacy
+    ``ContentCreature.cs:224`` ``DinoId = Id.ToString()``). ASE concatenates the
+    two id halves as *signed* int32 decimals (legacy ``ContentCreature.cs:378``
+    ``DinoID1.ToString() + DinoID2.ToString()``, where ``GetPropertyValue<int>``
+    reinterprets each stored uint32 as a signed int). The forms differ, so the
+    engine must be known; passing the wrong flag re-introduces the divergence.
+    """
+    assert isinstance(is_asa, bool), "is_asa must be bool"
+    a, b = _int(id1), _int(id2)
+    if a == 0 and b == 0:
+        return "0"
+    if is_asa:
+        return str((a << 32) | (b & 0xFFFFFFFF))
+    a32 = a & 0xFFFFFFFF
+    b32 = b & 0xFFFFFFFF
+    a32 = a32 - 0x100000000 if a32 & 0x80000000 else a32
+    b32 = b32 - 0x100000000 if b32 & 0x80000000 else b32
+    result = f"{a32}{b32}"
+    assert result, "dinoid string must be non-empty"
+    return result
+
+
 def _colors(obj: t.Any) -> list[int]:
     out = [0] * 6
     getter = getattr(obj, "get_properties_by_name", None)
@@ -1052,7 +1077,10 @@ def _tamed_dict(
     mut_pts = _stat_array(status, "NumberOfMutationsAppliedTamed")
     base_level = _int(_prop(status, "BaseCharacterLevel"), default=1) or 1
     extra_level = _int(_prop(status, "ExtraCharacterLevel"))
-    dino_id = _combine_dino_id(_prop(obj, "DinoID1"), _prop(obj, "DinoID2"))
+    is_asa = bool(getattr(save, "is_asa", False))
+    raw_id1 = _prop(obj, "DinoID1")
+    raw_id2 = _prop(obj, "DinoID2")
+    dino_id = _combine_dino_id(raw_id1, raw_id2)
     # Legacy negates the id of stored (cryo/vivarium) creatures so they don't
     # collide with live tames (ContentTamedCreature.cs:122-126/228-232). The
     # dinoid field stays positive (C# sets DinoId = Id.ToString() before negating).
@@ -1073,7 +1101,10 @@ def _tamed_dict(
     is_female = bool(_prop(obj, "bIsFemale", default=False))
     targeting_team = _int(_prop(obj, "TargetingTeam"))
     baby = bool(_prop(obj, "bIsBaby", default=False))
-    baby_age = _float(_prop(obj, "BabyAge"), default=1.0) if baby else 1.0
+    # A baby with no BabyAge property is a newborn (maturation 0), not an adult.
+    # Legacy reads BabyAge with default 0 (ContentCreature.cs:98). Non-babies
+    # stay at 1.0 -> maturation "100".
+    baby_age = _float(_prop(obj, "BabyAge"), default=0.0) if baby else 1.0
     father_id, father_name = _ancestor_parent(obj, "Male")
     mother_id, mother_name = _ancestor_parent(obj, "Female")
     tribe_name = _str(_prop(obj, "TribeName"))
@@ -1100,7 +1131,7 @@ def _tamed_dict(
         "mut-f": _int(_prop(obj, "RandomMutationsFemale")),
         "mut-m": _int(_prop(obj, "RandomMutationsMale")),
         "cryo": bool(_prop(obj, "IsInCryo", default=False)),
-        "dinoid": str(dino_id),
+        "dinoid": _dino_id_str(raw_id1, raw_id2, is_asa),
         "isMating": bool(_prop(obj, "bEnableTamedMating", default=False)),
         "isNeutered": bool(_prop(obj, "bNeutered", default=False)),
         "isClone": bool(_prop(obj, "bIsClone", default=False))
@@ -1109,7 +1140,9 @@ def _tamed_dict(
         "uploadedServer": _str(_prop(obj, "UploadedFromServerName")),
         "maturation": str(int(baby_age * 100)),
         **_flat_stats(mut_pts, "m"),
-        "traits": _traits(obj),
+        # Legacy emits tamed traits as a list of objects ([{"trait": <class>}]),
+        # not a flat string list (ContentPack.cs:723-735). Match that shape.
+        "traits": [{"trait": tr} for tr in _traits(obj)],
         "inventory": _inventory_items(obj, lookup),
         "father_id": father_id,
         "mother_id": mother_id,
@@ -1615,12 +1648,15 @@ def _wild_dict(
     obj: t.Any,
     status: t.Any,
     map_config: MapConfig | None,
+    is_asa: bool = False,
 ) -> dict[str, t.Any]:
     base_pts = _stat_array(status, "NumberOfLevelUpPointsApplied")
     base_level = _int(_prop(status, "BaseCharacterLevel"), default=1) or 1
     colors = _colors(obj)
     is_female = bool(_prop(obj, "bIsFemale", default=False))
-    dino_id = _combine_dino_id(_prop(obj, "DinoID1"), _prop(obj, "DinoID2"))
+    raw_id1 = _prop(obj, "DinoID1")
+    raw_id2 = _prop(obj, "DinoID2")
+    dino_id = _combine_dino_id(raw_id1, raw_id2)
     traits = _traits(obj)
     class_name = getattr(obj, "class_name", "") or ""
     tameable = _is_tameable(class_name, obj)
@@ -1632,7 +1668,7 @@ def _wild_dict(
         "lvl": base_level,
         **_flat_stats(base_pts),
         **{f"c{i}": colors[i] for i in range(6)},
-        "dinoid": str(dino_id),
+        "dinoid": _dino_id_str(raw_id1, raw_id2, is_asa),
         "tameable": tameable,
         # Legacy emits the first trait as a singular ``trait``; the full
         # CreatureTraits list is exposed alongside as ``traits``.
@@ -1647,8 +1683,9 @@ def _wild_dict(
 
 def export_wild(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
     objects = _world_objects(save, "get_wild_creatures", "wild_objects")
+    is_asa = bool(getattr(save, "is_asa", False))
     lookup = _save_lookup(save)
-    return [_wild_dict(obj, _status_for(obj, lookup), map_config) for obj in objects]
+    return [_wild_dict(obj, _status_for(obj, lookup), map_config, is_asa) for obj in objects]
 
 
 def _player_from_profile(
@@ -2210,7 +2247,10 @@ def _structure_dict(
         "struct": class_name,
         "name": box_name,
         "locked": locked,
-        "created": _structure_created(obj, save),
+        # Legacy CreatedDateTime is DateTime? -> a null interpolates to "" in
+        # the JSON, never JSON null. Match that (avoids a null-vs-string flip
+        # for structures whose creation time can't be resolved).
+        "created": _structure_created(obj, save) or "",
         "inventory": _inventory_items(obj, lookup),
         "decay_reset": bool(_prop(obj, "bHasResetDecayTime", default=False)),
         "last_ally_in_range": (

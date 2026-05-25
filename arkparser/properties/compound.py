@@ -418,8 +418,17 @@ def _read_array_elements(
         for _ in range(count):
             values.append(reader.read_int8())
     elif array_type == "ByteProperty":
-        for _ in range(count):
-            values.append(reader.read_uint8())
+        # ASE enum byte-arrays store each element as an 8-byte name-table
+        # reference, not a raw uint8. Legacy ArkArrayByteHandler discriminates
+        # on size: data_size > count+4 -> name refs, data_size == count+4 ->
+        # raw uint8. Mirror it so a name-valued byte array doesn't under-read
+        # and drift the cursor into the next property (the cluster-drift class).
+        if not is_asa and count > 0 and data_size > count + 4:
+            for _ in range(count):
+                values.append(read_name(reader, name_table))
+        else:
+            for _ in range(count):
+                values.append(reader.read_uint8())
     elif array_type == "FloatProperty":
         for _ in range(count):
             values.append(reader.read_float())

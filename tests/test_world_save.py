@@ -39,7 +39,7 @@ import pytest
 from arkparser import WorldSave
 from arkparser.game_objects.game_object import GameObject
 from arkparser.game_objects.location import LocationData
-from arkparser.export import _ancestor_parent, _combine_dino_id
+from arkparser.export import _ancestor_parent
 
 _EXAMPLES = Path(__file__).parent.parent / "references" / "examples"
 
