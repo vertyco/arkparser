@@ -188,7 +188,7 @@ LEGACY_TRIBE_KEYS: frozenset[str] = frozenset({
 })
 LEGACY_STRUCT_KEYS: frozenset[str] = frozenset({
     "id", "tribeid", "tribe", "struct", "name", "locked", "created", "inventory",
-    "lat", "lon", "ccc",
+    "lat", "lon", "ccc", "isSwitchedOn",
 })
 LEGACY_MAP_STRUCT_KEYS: frozenset[str] = frozenset({
     "struct", "inventory", "lat", "lon", "ccc",
@@ -2212,8 +2212,6 @@ def _structure_dict(
         "locked": locked,
         "created": _structure_created(obj, save),
         "inventory": _inventory_items(obj, lookup),
-        "powered": powered,
-        "switched_on": bool(_prop(obj, "bContainerActivated", default=False)),
         "decay_reset": bool(_prop(obj, "bHasResetDecayTime", default=False)),
         "last_ally_in_range": (
             d.isoformat()
@@ -2256,6 +2254,12 @@ def _structure_dict(
         "pin_code": _pin_code(obj),
     }
     data.update(_gps_payload(obj, map_config, ndigits=2))
+    # Legacy ASVExport emits isSwitchedOn only for powered structures (ContentStructure.cs:58):
+    # bContainerActivated when (bIsPowered or bHasFuel), omitted otherwise. Mirror that exactly so
+    # on/off state stays a single field. Kept in LEGACY_STRUCT_KEYS so a powered-but-off False is
+    # not pruned by _compact.
+    if powered:
+        data["isSwitchedOn"] = bool(_prop(obj, "bContainerActivated", default=False))
     return _compact(data, LEGACY_STRUCT_KEYS)
 
 

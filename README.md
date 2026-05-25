@@ -325,8 +325,7 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `created` | legacy (richer) | ISO 8601 datetime with the local TZ of the parser machine, computed `save.file_mtime + (OriginalCreationTime - game_time)` (mirrors legacy `ContentContainer.GetApproxDateTimeOf`). `null` when the anchors are missing. |
 | `inventory` | legacy | items from `MyInventoryComponent.InventoryItems` |
 | `lat`, `lon`, `ccc` | legacy | location via `MapConfig`, **rounded to 2 decimals** (parser-only nicety, not legacy parity) |
-| `powered` | added | `bIsPowered` or `bHasFuel` |
-| `switched_on` | added | `bContainerActivated` (lamps / fridges / etc.) |
+| `isSwitchedOn` | legacy | `bContainerActivated`, emitted only when the structure is powered (`bIsPowered` or `bHasFuel`); omitted otherwise. Mirrors legacy `ContentStructure.cs` / `ContentPack.cs` (`IsSwitchedOn.HasValue`). |
 | `decay_reset` | added | `bHasResetDecayTime` |
 | `last_ally_in_range_seconds` | added | raw `LastInAllyRangeTime` / `LastInAllyRangeTimeSerialized` / `LastInAllyRangeSerialized` (in-game seconds, float) |
 | `last_ally_in_range` | added | ISO 8601 datetime with local TZ. `null` when the save lacks the anchors. |

@@ -80,3 +80,63 @@ Summer Drakeling) to its creature map. arkviewer could additionally filter
 `__UNKNOWN_CLASS_` prefixed entries out of `ASV_Wild` / `ASV_Tamed` exports
 once the root cause here is understood (so we don't mask a real bug that
 should be fixed in arkparser).
+
+---
+
+## ASE cloud/cluster inventory: parser cursor drift → dropped uploads + WARNING spam
+
+**Symptom:** On a live ASE Ragnarok PvE server (May 2026) every full reparse logs
+a burst of WARNINGs and the affected cluster files are **skipped entirely** — their
+uploads never reach `ASV_Tamed` or the per-player upload splice:
+
+```
+WARNING [arkparser.export]: Skipping cluster file ...\clusters\solecluster\2533274829298794: Attempted to read 8519680 bytes, but only 104300 bytes available
+WARNING [arkparser.export]: Skipping cluster file ...\2533274854487560: Attempted to read 32238572 bytes, but only 76737 bytes available
+WARNING [arkparser.export]: Skipping cluster file ...\2533274905839355: Attempted to read 17038948 bytes, but only 10051 bytes available
+WARNING [arkparser.export]: Skipping cluster file ...\2535426726772842: Attempted to read 8441140 bytes, but only 151765 bytes available
+```
+
+**Source:** `EndOfDataError` raised at `arkparser/common/exceptions.py:96-99`,
+caught + logged at `arkparser/export.py:2382` inside `_load_cluster_inventories`.
+The file is parsed by `CloudInventory.load` (`arkparser/files/cloud_inventory.py`).
+
+**Diagnosis (from the arkviewer-side investigation, 2026-05-24):** these are **not**
+genuinely-corrupt stub files. The requested byte counts (`8519680 = 0x00820000`,
+`32238572 = 0x01EC85AC`, `17038948`, …) are arbitrary in-file bytes being read as an
+int32 **length prefix after the parse cursor has drifted**. The file header parses
+and some properties succeed, then a length read mid-object goes wildly out of range
+and overruns the buffer. Classic cursor misalignment in the ASE cloud-inventory
+property layout — not corruption. (Contrast: the loader's object-count sanity clamp
+at `cloud_inventory.py:91-92` passes, and the failure is deep in a single object.)
+
+**Impact:** real cluster uploads in the affected files are silently dropped from the
+export (the cross-server tamed splice + player uploaded-items). On a busy PvE
+cluster that can be a meaningful fraction of uploaded creatures/items. Plus WARNING
+spam on every reparse.
+
+**Hypotheses to investigate (ranked):**
+
+1. **ASE cloud property-layout assumption.** The cloud/obelisk file lays out some
+   property/struct type slightly differently from the worldsave path. Find the first
+   property where the cursor diverges.
+2. **Length-prefix width / encoding.** A field read as int32 that is actually
+   int16/uint, or the UTF-16-vs-UTF-8 string-length sign convention in `read_string`
+   (negative length = UTF-16) misapplied on the cloud path.
+3. **A specific upload subtype** present only in these files (a particular
+   saddle/blueprint/cryopod variant) whose body size is mis-read.
+
+**Diagnostic next steps:**
+
+- Pull a failing file (live Ragnarok `solecluster` dir, or ask the operator) into
+  `references/local_saves/` as a fixture. Instrument `CloudInventory.load` to log the
+  cursor offset + last-good property name at the bad length read — localizes the
+  drift to one property type.
+- Diff the same file's legacy `ASVExport.exe` cluster output (legacy parses these)
+  against the arkparser attempt to see exactly what's dropped.
+
+**arkviewer-side mitigation already in place (does NOT fix the drop):** arkviewer
+parses each cluster file in its own `try/except` (one bad file can't abort the whole
+reparse) and skips `< 16` byte stubs silently. Uploads in a drifting file remain
+lost until the parser is fixed here. See
+`references/Documents/UPSTREAM_arkviewer_memory_streaming.md` for the related
+memory work.
