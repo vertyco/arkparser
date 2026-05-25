@@ -44,6 +44,11 @@ logger = logging.getLogger(__name__)
 # ASE GUIDs are always all-zero; precomputed sentinel skips UUID construction.
 _ZERO_GUID = b"\x00" * 16
 
+# Upper bound on ASA name-table entries (largest observed real table ~4.6k).
+# A count above this means the read is misaligned (a garbage int32 length),
+# so we fail loudly instead of looping over ~billions of phantom entries.
+_MAX_ASA_NAME_TABLE = 1_000_000
+
 
 @dataclass
 class EmbeddedData:
@@ -683,50 +688,79 @@ class WorldSave:
         reader = BinaryReader.from_bytes(row[0])
 
         self.version = reader.read_int16()
-        _legacy_offset = reader.read_int32()
-        # v14+ adds two int32 fields (unk1, actual_offset) between
+        legacy_offset = reader.read_int32()
+        # v14+ adds two int32 fields (unk1, name_table_offset) between
         # legacy_offset and game_time; v13 saves jump straight to game_time.
         # Without this version gate we mis-align the read by 8 bytes and the
-        # data_files / name_table loops walk into garbage.
+        # data_files loop walks into garbage.
+        name_table_offset = legacy_offset  # v13: table follows the parts section
         if self.version >= 14:
             _unknown1 = reader.read_int32()
-            _actual_offset = reader.read_int32()
+            name_table_offset = reader.read_int32()  # absolute offset of name table
         self.game_time = reader.read_double()
         _unknown2 = reader.read_int32()
 
-        # Data files
+        # Data files (immediately follow the header; populate self.data_files).
         count = reader.read_int32()
         self.data_files = []
         for _ in range(count):
             self.data_files.append(reader.read_string())
-            _term = reader.read_int32()
+            _term = reader.read_int32()  # per-entry terminator, always -1
 
-        _pad1 = reader.read_int32()
-        _pad2 = reader.read_int32()
-
-        # Name table (dict keyed by hash for ASA).
+        # Name table (dict keyed by FName hash for ASA).
         #
-        # Most ASA saves serialize the table as a flat ``(hash, strlen,
-        # string)`` triple per entry.  Some maps (observed on Ragnarok,
-        # Scorched Earth and TheIsland on busy servers) prepend
-        # user-placed-structure name entries that carry an extra 4-byte
-        # trailer after the string; those entries always have
-        # ``hash == 1`` as a sentinel.  Detect that sentinel per-entry and
-        # consume the trailer so the rest of the table parses normally.
-        # Without this, parsing the next entry's hash misreads the trailer
-        # as a string length and explodes with EndOfDataError on a ~500 MB
-        # phantom string.
+        # v14+: the engine stores the table at an explicit absolute offset
+        # (name_table_offset = the 2nd int32 after legacy_offset). The bytes
+        # between the data-files section and that offset are NOT a fixed pad
+        # pair on every map - on busy/modded saves (measured: Ragnarok +26 B,
+        # Scorched Earth +31 B past where a sequential read lands) the table
+        # would be read truncated, leaving ~half the class refs resolving to
+        # __UNKNOWN_CLASS_<hash>__. Seek to the offset like the C# reference
+        # (AsaSavegame.readNametable: ``archive.Position = nameTableOffset``).
+        # Where the gap is zero (TheIsland, Aberration, Extinction) the seek is
+        # a no-op; where it drifts it recovers every leaked class name.
+        if self.version >= 14:
+            assert 0 <= name_table_offset <= reader.size, (
+                f"ASA name-table offset {name_table_offset} out of range "
+                f"(blob size {reader.size})"
+            )
+            reader.position = name_table_offset
+            self.name_table = self._read_asa_name_table(reader)
+        else:
+            # v13: no explicit offset field. Retain the historical sequential
+            # read (two pad int32s, then the table) - there is no live v13
+            # fixture to validate a seek against. The idx==1 sentinel consumes
+            # the 4-byte trailer on user-placed-actor entries.
+            reader.read_int32()  # pad1
+            reader.read_int32()  # pad2
+            self.name_table = self._read_asa_name_table(reader, sentinel=True)
+
+    def _read_asa_name_table(
+        self, reader: BinaryReader, sentinel: bool = False
+    ) -> dict[int, str]:
+        """Read an ASA name table (FName-hash -> class string) at ``reader``'s position.
+
+        Preconditions: ``reader`` is positioned at the table's int32 entry
+        count. Postconditions: returns ``{hash: trimmed_class_string}`` (the
+        substring after the last ``.``) and advances the reader past the table.
+        ``sentinel`` consumes the extra 4-byte trailer following
+        user-placed-actor entries (``idx == 1``) on the v13 sequential path; it
+        is unused on the v14 seek path.
+        """
+        assert reader.remaining >= 4, "no room for ASA name-table count"
         name_count = reader.read_int32()
+        assert 0 <= name_count <= _MAX_ASA_NAME_TABLE, (
+            f"implausible ASA name-table count {name_count} - misaligned read"
+        )
         nt: dict[int, str] = {}
         for _ in range(name_count):
             idx = reader.read_int32()
             raw = reader.read_string()
             nt[idx] = raw.rsplit(".", 1)[-1] if "." in raw else raw
-            if idx == 1:
-                # User-placed-actor name sentinel: skip the 4-byte sub-id /
-                # trailing tag that follows on these entries.
+            if sentinel and idx == 1:
+                # User-placed-actor sentinel: skip the trailing 4-byte tag.
                 reader.skip(4)
-        self.name_table = nt
+        return nt
 
     def _read_asa_actor_locations(self, conn: sqlite3.Connection) -> None:
         """Parse the ``ActorTransforms`` blob."""
