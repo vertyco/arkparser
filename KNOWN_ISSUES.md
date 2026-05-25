@@ -55,6 +55,18 @@ spam on every reparse.
 - Diff the same file's legacy `ASVExport.exe` cluster output (legacy parses these)
   against the arkparser attempt to see exactly what's dropped.
 
+**Investigation 2026-05-25 — could NOT reproduce (triggering files gone):**
+scanned all 490 non-empty files in the live `pvp` cluster
+(`\\192.168.1.91\homes\reclaimer\Clusters\pvp`) with `CloudInventory.load` —
+every one parsed cleanly (all version 4 ASE, 0 `EndOfDataError`). The four files
+named above are absent from both the cluster and `.sync/Archive` (cluster uploads
+are transient — players re-download, the stale upload is purged). With no failing
+file the drift cannot be localized and a fix cannot be verified, so none was
+attempted (a blind change risks regressing the v4 path that currently parses
+490/490). **Next step:** when the WARNING recurs on the live server, copy the
+named file out of the cluster *before* it is consumed, drop it into
+`references/local_saves/` as a fixture, then localize the divergent property.
+
 **arkviewer-side mitigation already in place (does NOT fix the drop):** arkviewer
 parses each cluster file in its own `try/except` (one bad file can't abort the whole
 reparse) and skips `< 16` byte stubs silently. Uploads in a drifting file remain
