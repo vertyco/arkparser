@@ -178,14 +178,14 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 | `mut-f`, `mut-m` | legacy | **Ancestor-line totals.** `RandomMutationsFemale` and `RandomMutationsMale`, single integers counting the total number of mutations that occurred down the maternal and paternal ancestry lines respectively. These are *not* per-stat, they share the `-m` token with the per-stat mutation block below but mean a different thing. Kept under the legacy names for ASVExport parity. |
 | `cryo` | legacy | `True` for creatures embedded inside cryopod / soultrap / vivarium / dinoball items in the world save, `False` for actor-in-world tames. `export_tamed` walks `WorldSave.iter_cryopod_creatures()` and emits one ASV_Tamed record per embedded creature in addition to the actor-in-world tames; on busy PvE servers cryopodded tames are the majority of the roster (e.g. 10,277 of 11,054 on a live Ragnarok_WP). Cluster-uploaded tames also surface here (via `export_cluster_uploads`) with `cryo=True`. |
 | `ccc` | legacy | `"{x} {y} {z}"` from `LocationData` |
-| `dinoid` | legacy | string form of `id` |
+| `dinoid` | legacy | string form of the dino id. **ASA**: decimal of the combined 64-bit `id`. **ASE**: the two halves concatenated as signed-int32 decimals (`str(DinoID1) + str(DinoID2)`), matching `ASVExport`. |
 | `isMating` | legacy | `bEnableTamedMating` |
 | `isNeutered` | legacy | `bNeutered` |
 | `isClone` | legacy | `bIsClone` or `bIsCloneDino` |
 | `tamedServer` | legacy | `TamedOnServerName` |
 | `uploadedServer` | legacy | `UploadedFromServerName` |
-| `maturation` | legacy | `str(int(BabyAge * 100))` (string for legacy parity) |
-| `traits` | legacy | `CreatureTraits` (full list of mutation trait class names) |
+| `maturation` | legacy | `str(int(BabyAge * 100))` — integer maturation percent (a baby with no `BabyAge` is `0`, a newborn). Note: legacy emits the full float string (e.g. `"7.5131035"`); arkparser truncates to the integer percent. Semantically equal and the downstream consumer coerces to `int` either way. |
+| `traits` | legacy | `CreatureTraits` as a list of `{"trait": <class>}` objects (matches `ASVExport`'s shape, not a flat string list) |
 | `inventory` | legacy | items from `MyInventoryComponent.InventoryItems`. Each entry carries `itemId`, `qty`, `blueprint`, plus a full snake_case property dump flattened in at the top level (`id`, `rating`, `durability`, `quality`, `damage`, `armor`, `durability_max`, `hypo`, `hyper`, `clip_size`, `weight`, `crafter`, `crafter_tribe`, `skill_bonus`, `loaded_ammo`, `spoils_at`, `spoiled_at`, `c0`..`c5`, `egg_*`, etc). `item_stat_values` is unpacked into the universal 8-slot ARK map (slot 0 `gen_quality`, 1 `armor`, 2 `durability_max`, 3 `damage`, 4 `clip_size`, 5 `hypo`, 6 `weight`, 7 `hyperthermal_insulation`); raw uint16s scaled by the per-blueprint multiplier (which lives in the UE blueprint, not the save). Default / unset values are filtered (no `craft_queue=0`, `skin=-1`, `color_pre_skin=[0]*6`, NaN spoil timers, etc). When the item is a **cryopod / soultrap / vivarium / dinoball** with an embedded creature, the entry is enriched with `dino_id` (combined 64-bit id matching the corresponding `ASV_Tamed` record), `dino_creature` (species / class name), and `dino_name` (`TamedName` if set). Cryopods stored in containers (cryofridges, vaults, dedicated storage) get the same enrichment. |
 | `father_id`, `mother_id` | added | combined dino id from the first `DinoAncestors` entry (`null` when missing) |
 | `father_name`, `mother_name` | added | name strings from the first `DinoAncestors` entry |
@@ -222,7 +222,7 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 
 | Field | Origin | Source / formula |
 |---|---|---|
-| `id`, `dinoid` | legacy | `(DinoID1 << 32) \| DinoID2` and its string form |
+| `id`, `dinoid` | legacy | `id` = `(DinoID1 << 32) \| DinoID2`. `dinoid` = its string form on **ASA**, or `str(DinoID1) + str(DinoID2)` (signed int32) on **ASE**, matching `ASVExport`. |
 | `creature` | legacy | `GameObject.class_name` |
 | `sex` | legacy | `"Female"` if `bIsFemale` else `"Male"` |
 | `lvl` | legacy | `BaseCharacterLevel` (status) |

@@ -15,8 +15,19 @@ import pytest
 
 from arkparser.common.binary_reader import BinaryReader
 from arkparser.common.exceptions import CorruptDataError, EndOfDataError
-from arkparser.export import _SyntheticGameObject, _float, _gps_payload, _tamed_dict
+from arkparser.data_models import UploadedCreature, UploadedItem
+from arkparser.export import (
+    _SyntheticGameObject,
+    _dino_id_str,
+    _float,
+    _gps_payload,
+    _structure_dict,
+    _tamed_dict,
+    _wild_dict,
+)
+from arkparser.files.world_save import _checked_count
 from arkparser.game_objects.game_object import MAX_OBJECT_COUNT, read_object_list
+from arkparser.properties.compound import _read_array_elements
 
 
 def _status() -> _SyntheticGameObject:
@@ -136,3 +147,124 @@ def test_read_object_list_zero_count_ok() -> None:
     reader = BinaryReader.from_bytes((0).to_bytes(4, "little"))
     assert read_object_list(reader, is_asa=False) == []
     assert MAX_OBJECT_COUNT > 1_000_000
+
+
+# --- code-review (max): tamed `traits` shape is legacy object-list -----------
+
+def test_tamed_traits_emitted_as_objects() -> None:
+    # Legacy ASVExport emits tamed traits as [{"trait": <class>}], not [str]
+    # (ContentPack.cs:723-735).
+    actor = _SyntheticGameObject(
+        "Dodo_C", {"CreatureTraits": ["Rabid_Tier1", "Aggressive_Tier2"]}
+    )
+    rec = _tamed_dict(actor, _status(), {}, None)
+    assert rec["traits"] == [{"trait": "Rabid_Tier1"}, {"trait": "Aggressive_Tier2"}]
+
+
+def test_tamed_traits_empty_list_when_absent() -> None:
+    rec = _tamed_dict(_SyntheticGameObject("Dodo_C", {}), _status(), {}, None)
+    assert rec["traits"] == []
+
+
+# --- code-review (max): ASE/ASA `dinoid` string form ------------------------
+
+def test_tamed_dinoid_ase_is_decimal_concat() -> None:
+    # ASE (save absent -> is_asa False): str(DinoID1) + str(DinoID2).
+    actor = _SyntheticGameObject("Dodo_C", {"DinoID1": 475230717, "DinoID2": 97170314})
+    rec = _tamed_dict(actor, _status(), {}, None)
+    assert rec["dinoid"] == "47523071797170314"
+
+
+def test_tamed_dinoid_asa_is_combined_id() -> None:
+    # ASA: decimal of the combined 64-bit id (== the positive `id`).
+    actor = _SyntheticGameObject("Dodo_C", {"DinoID1": 475230717, "DinoID2": 97170314})
+    save = types.SimpleNamespace(is_asa=True)
+    rec = _tamed_dict(actor, _status(), {}, None, save=save)
+    assert rec["dinoid"] == "2041100387666801546"
+    assert rec["dinoid"] == str(rec["id"])
+
+
+def test_wild_dinoid_ase_vs_asa() -> None:
+    obj = _SyntheticGameObject("Raptor_C", {"DinoID1": 475230717, "DinoID2": 97170314})
+    assert _wild_dict(obj, _status(), None, False)["dinoid"] == "47523071797170314"
+    assert _wild_dict(obj, _status(), None, True)["dinoid"] == "2041100387666801546"
+
+
+def test_dino_id_str_ase_halves_are_signed_int32() -> None:
+    # ASE concat reinterprets each uint32 half as signed int32 (matches C#
+    # GetPropertyValue<int>); both-zero collapses to "0" not "00".
+    assert _dino_id_str(0x90000000, 5, is_asa=False) == "-18790481925"
+    assert _dino_id_str(0, 0, is_asa=False) == "0"
+    assert _dino_id_str(0, 0, is_asa=True) == "0"
+
+
+# --- code-review (max): maturation newborn default --------------------------
+
+def test_tamed_maturation_newborn_is_zero() -> None:
+    # A baby with no BabyAge is a newborn -> "0" (legacy default), not "100".
+    baby = _SyntheticGameObject("Dodo_C", {"bIsBaby": True})
+    assert _tamed_dict(baby, _status(), {}, None)["maturation"] == "0"
+
+
+def test_tamed_maturation_adult_is_hundred() -> None:
+    adult = _SyntheticGameObject("Dodo_C", {})
+    assert _tamed_dict(adult, _status(), {}, None)["maturation"] == "100"
+
+
+# --- code-review (max): structure `created` is "" not null ------------------
+
+def test_structure_created_empty_string_when_no_anchor() -> None:
+    # Legacy CreatedDateTime is DateTime? -> interpolates to "" (never null).
+    struct = _SyntheticGameObject("Wall_C", {})
+    assert _structure_dict(struct, None, {}, None)["created"] == ""
+
+
+# --- code-review (max): non-finite floats never crash strict JSON -----------
+
+def test_uploaded_item_nan_rating_is_legacy_sentinel() -> None:
+    item = UploadedItem.from_ark_data(
+        {"ArkTributeItem": {"ItemRating": float("nan"), "ItemDurability": float("inf")}}
+    )
+    assert item.rating == 0.0001  # legacy ContentItem.cs:62 substitution
+    assert item.durability == 0.0
+    json.dumps(item.to_dict())  # strict serialization must not raise
+
+
+def test_uploaded_creature_nan_experience_zeroed() -> None:
+    c = UploadedCreature.from_ark_data({"DinoExperiencePoints": float("nan")})
+    assert c.experience == 0.0
+
+
+# --- code-review (max): ASE byte-array enum-name discriminator (C1) ----------
+
+def test_byte_array_raw_uint8_path_unchanged() -> None:
+    # data_size == count+4 -> raw uint8 (common case; must not regress).
+    reader = BinaryReader.from_bytes(b"\x0a\x14\x1e")
+    vals = _read_array_elements(reader, "ByteProperty", 3, 3 + 4, "Foo", False, None)
+    assert vals == [10, 20, 30]
+
+
+def test_byte_array_enum_name_path_no_drift() -> None:
+    # data_size > count+4 -> 8-byte name refs, not 1-byte uint8 (would drift).
+    def _ref(index: int, instance: int) -> bytes:
+        return index.to_bytes(4, "little") + instance.to_bytes(4, "little")
+
+    reader = BinaryReader.from_bytes(_ref(1, 0) + _ref(2, 0))
+    vals = _read_array_elements(reader, "ByteProperty", 2, 2 * 8 + 4, "Colors", False, ["Foo", "Bar"])
+    assert vals == ["Foo", "Bar"]
+    assert reader.remaining == 0  # consumed 8 bytes/elem -> no cursor drift
+
+
+# --- code-review (max): corrupt count caps survive python -O (D1/D2) ---------
+
+def test_checked_count_rejects_absurd_and_negative() -> None:
+    absurd = BinaryReader.from_bytes((MAX_OBJECT_COUNT + 1).to_bytes(4, "little"))
+    with pytest.raises(CorruptDataError):
+        _checked_count(absurd, "test")
+    negative = BinaryReader.from_bytes((-1).to_bytes(4, "little", signed=True))
+    with pytest.raises(CorruptDataError):
+        _checked_count(negative, "test")
+
+
+def test_checked_count_accepts_valid() -> None:
+    assert _checked_count(BinaryReader.from_bytes((42).to_bytes(4, "little")), "test") == 42

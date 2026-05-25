@@ -4,7 +4,6 @@ Tests for tribe (.arktribe) parsing - both ASE and ASA formats.
 
 from pathlib import Path
 
-import pytest
 
 from arkparser import Tribe
 

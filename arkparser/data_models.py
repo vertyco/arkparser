@@ -8,6 +8,7 @@ property data from ARK save files.
 from __future__ import annotations
 
 import logging
+import math
 import typing as t
 from dataclasses import dataclass, field
 
@@ -16,6 +17,21 @@ from .common.normalization import normalize_indexed_data, normalize_indexed_list
 from .properties.registry import read_properties
 
 logger = logging.getLogger(__name__)
+
+
+def _finite(value: t.Any, default: float) -> float:
+    """Coerce to a finite float; NaN / inf / non-numeric collapse to ``default``.
+
+    Non-finite floats are invalid JSON tokens that crash strict serializers
+    (``json.dumps(allow_nan=False)``, JS ``JSON.parse``, pydantic). Legacy
+    ASVExport substitutes ``0.0001`` for a NaN item rating (ContentItem.cs:62);
+    other non-finite floats fall back to ``0.0``.
+    """
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
 
 
 @dataclass
@@ -201,7 +217,7 @@ class UploadedCreature:
             dino_id1=data.get("DinoID1", 0),
             dino_id2=data.get("DinoID2", 0),
             level=level,
-            experience=data.get("DinoExperiencePoints", 0.0),
+            experience=_finite(data.get("DinoExperiencePoints", 0.0), 0.0),
             stats=stats,
             upload_time=data.get("UploadTime", 0),
             version=data.get("Version", 0.0),
@@ -735,8 +751,8 @@ class UploadedItem:
             item_id2=item_id.get("ItemID2", 0) if isinstance(item_id, dict) else 0,
             quantity=ark_tribute.get("ItemQuantity", 1) or 1,
             quality_index=ark_tribute.get("ItemQualityIndex", 0),
-            durability=ark_tribute.get("ItemDurability", 0.0),
-            rating=ark_tribute.get("ItemRating", 0.0),
+            durability=_finite(ark_tribute.get("ItemDurability", 0.0), 0.0),
+            rating=_finite(ark_tribute.get("ItemRating", 0.0), 0.0001),
             slot_index=ark_tribute.get("SlotIndex", 0),
             is_blueprint=ark_tribute.get("bIsBlueprint", False),
             is_engram=ark_tribute.get("bIsEngram", False),
