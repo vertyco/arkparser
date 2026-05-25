@@ -268,7 +268,8 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `torp`, `temp` | added | same source, indices legacy never emitted |
 | `active` | legacy | last-active datetime; currently `null` (placeholder for parity) |
 | `ccc` | legacy | `"0 0 0"` (no in-world position from profile/cluster source) |
-| `achievements`, `inventory`, `netAddress` | legacy | reserved arrays/string (currently empty for parity) |
+| `achievements` | legacy | reserved array (currently empty for parity) |
+| `netAddress` | legacy (now populated) | Last client IP ARK persisted (`SavedNetworkAddress` in profile `MyData`). Legacy ASVExport reads the same field (ContentPlayer.cs:157 ASE / :341 ASA). `""` when the profile lacks it (e.g. never-played placeholders). ASA stores a clean IPv4/IPv6 string; some ASE saves store an engine-truncated value (e.g. `"[2001"`) reproduced verbatim, matching legacy. |
 | `steamid`, `dataFile` | legacy | platform net id and `{steamid}.arkprofile` filename |
 | `active` | legacy (now populated) | ISO 8601 datetime of last login, converted from profile `LastLoginTime` or in-world pawn `SavedLastTimeHadController`. Legacy schema reserved the field but the old C# exporter only filled it for in-world pawns; the parser fills it for profiles too. `null` when neither source is present. |
 | `lat`, `lon`, `ccc` | legacy (now populated) | In-world position when the record was built from a `PlayerPawn` GameObject. Records sourced from profile / cluster files keep the legacy `0` / `"0 0 0"` placeholders since profiles carry no world position. |

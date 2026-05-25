@@ -1684,7 +1684,7 @@ def _player_from_profile(
         "ccc": "0 0 0",
         "achievements": [],
         "inventory": [],
-        "netAddress": "",
+        "netAddress": _str(profile.last_net_address),
         "engram_points": profile.total_engram_points,
         "experience": _int(profile.experience),
         "current_stats": _current_stats_dict(status),

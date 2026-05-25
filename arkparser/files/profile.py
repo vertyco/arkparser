@@ -208,6 +208,25 @@ class Profile(ArkFile):
             return None
 
     @property
+    def last_net_address(self) -> str | None:
+        """Last client IP / network address ARK persisted for this player.
+
+        Read from ``SavedNetworkAddress`` on the profile's ``MyData`` struct
+        (same level as ``LastLoginTime``). Legacy ASVExport reads this exact
+        field (ContentPlayer.cs:157 ASE / :341 ASA) and emits it as the
+        ``netAddress`` player key. Returns ``None`` when the field is absent
+        (e.g. empty placeholder profiles that were never played).
+
+        ASA stores a clean IPv4/IPv6 string; some ASE saves store an
+        engine-truncated value (e.g. ``"[2001"``) which is reproduced
+        verbatim - matching what legacy ASVExport emits for the same save.
+        """
+        val = self._player_data.get("SavedNetworkAddress")
+        if val is None:
+            return None
+        return str(val)
+
+    @property
     def total_engram_points(self) -> int:
         """Get total engram points spent."""
         return self._persistent_stats.get("PlayerState_TotalEngramPoints", 0) or 0
