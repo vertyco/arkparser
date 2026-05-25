@@ -22,7 +22,6 @@ Example:
 from __future__ import annotations
 
 import struct
-import typing as t
 from pathlib import Path
 from uuid import UUID
 

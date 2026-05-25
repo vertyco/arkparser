@@ -19,7 +19,6 @@ World saves (.ark files) have different headers:
 
 from __future__ import annotations
 
-import typing as t
 from enum import Enum
 from pathlib import Path
 
