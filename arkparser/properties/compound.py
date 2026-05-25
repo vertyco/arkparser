@@ -540,14 +540,36 @@ def _read_array_elements(
             if reader.position < array_data_end:
                 reader.skip(array_data_end - reader.position)
         else:
-            # ASE struct arrays - read as property-based structs
+            # ASE struct arrays. Resolve the element struct type the way legacy
+            # does (ArkArrayStruct.Init): the array-name map first, else INFER a
+            # native fixed-size type from the body size, where the body is the
+            # int32 count prefix (4) plus count * element_size. Without the size
+            # inference, native struct arrays addressed only by name (e.g.
+            # CustomItemColors = Color[6], data_size 28 = 6*4+4) are misread as
+            # property-list structs, the cursor drifts, and every later property
+            # in the object is corrupted (EndOfDataError on a garbage length).
+            struct_type = struct_registry.get_array_struct_type(array_name)
+            # ASE only: infer the native element type from the body size when the
+            # array name isn't mapped (legacy ArkArrayStruct.Init). Gated to ASE
+            # (not is_asa) so the ASA v6 struct-array path is untouched. The check
+            # is exact, and a property-list element is >= 9 bytes (min "None"
+            # terminator), so these equalities never match a property-list array.
+            if struct_type is None and not is_asa and count > 0:
+                if count * 4 + 4 == data_size:
+                    struct_type = "Color"
+                elif count * 12 + 4 == data_size:
+                    struct_type = "Vector"
+                elif count * 16 + 4 == data_size:
+                    struct_type = "LinearColor"
             for _ in range(count):
-                struct = struct_registry.read_struct_for_array(
-                    reader,
-                    array_name,
-                    is_asa,
-                    name_table=name_table,
-                )
+                if struct_type is not None:
+                    struct = struct_registry.read_struct(
+                        reader, struct_type, is_asa, name_table=name_table
+                    )
+                else:
+                    struct = struct_registry.read_struct_for_array(
+                        reader, array_name, is_asa, name_table=name_table
+                    )
                 if hasattr(struct, "to_dict"):
                     values.append(struct.to_dict())
                 else:
@@ -1206,7 +1228,7 @@ class MapProperty(Property):
         # Handle value type sub-header
         if value_type == "StructProperty":
             _struct_marker = reader.read_int32()  # Usually 1, sometimes 2+
-            struct_type_id = reader.read_int32()
+            _struct_type_id = reader.read_int32()
             _struct_type_inst = reader.read_int32()
             _script_marker = reader.read_int32()
             _script_path_id = reader.read_int32()
