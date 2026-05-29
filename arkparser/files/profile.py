@@ -154,15 +154,31 @@ class Profile(ArkFile):
 
         Note: ASE uses "TribeId" (lowercase d), ASA uses "TribeID" (uppercase D).
         """
-        raw = self._player_data.get("TribeId")
-        if raw is None:
-            raw = self._player_data.get("TribeID")
+        raw = self.raw_tribe_id
         if raw:  # non-zero, non-None
             return raw
         # Solo player or freshly-left a tribe: ARK's auto-tribe id == player_id.
         # Matches ASVExport behavior (and gives every player a stable, unique
         # tribe id even when they're not in a multi-member tribe).
         return self.player_id
+
+    @property
+    def raw_tribe_id(self) -> int | None:
+        """Explicit tribe id stored on the profile, or ``None`` when unset.
+
+        Unlike :attr:`tribe_id` this does NOT fall back to ``player_id``. The
+        legacy player->tribe allocation (ContentContainer.cs:764) keys on this
+        raw ``TargetingTeam``/``TribeId`` value: a player is allocated to an
+        existing tribe only when this explicit id matches one, otherwise they
+        get a solo tribe keyed on ``player_id``. Returns ``None``/``0`` for
+        solo players whose profile carries no explicit tribe.
+
+        ASE uses "TribeId" (lowercase d), ASA uses "TribeID" (uppercase D).
+        """
+        raw = self._player_data.get("TribeId")
+        if raw is None:
+            raw = self._player_data.get("TribeID")
+        return raw
 
     @property
     def tribe_name(self) -> str | None:

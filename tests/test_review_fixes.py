@@ -216,7 +216,8 @@ def test_tamed_maturation_adult_is_hundred() -> None:
 def test_structure_created_empty_string_when_no_anchor() -> None:
     # Legacy CreatedDateTime is DateTime? -> interpolates to "" (never null).
     struct = _SyntheticGameObject("Wall_C", {})
-    assert _structure_dict(struct, None, {}, None)["created"] == ""
+    # _structure_dict now takes a tribe_names map (resolved owning-tribe names).
+    assert _structure_dict(struct, None, {}, None, {})["created"] == ""
 
 
 # --- code-review (max): non-finite floats never crash strict JSON -----------

@@ -265,45 +265,28 @@ class WorldSave:
     # TargetingTeam threshold: the C# reference (TeamType.cs) uses 50_000 as the
     # boundary between non-player (wild/AI) and player-owned teams.
     _PLAYER_TEAM_THRESHOLD: t.ClassVar[int] = 50_000
-    # Unclaimed babies use 2_000_000_000 as a sentinel; still tamed.
-    _BREEDING_SENTINEL: t.ClassVar[int] = 2_000_000_000
-
-    # Property names that indicate a creature was tamed by a player. Cryo'd
-    # creatures often have their TargetingTeam stripped to 0 while keeping
-    # these markers, so we check them as a fallback after the team-id rule.
-    _TAMED_MARKER_PROPERTIES: t.ClassVar[tuple[str, ...]] = (
-        "TamerString",
-        "TamedName",
-        "TamedAtTime",
-        "TribeName",
-        "TamedOnServerName",
-        "UploadedFromServerName",
-        "ImprinterName",
-        "ImprinterPlayerDataID",
-        "TamingTeamID",
-    )
-
     def _is_tamed_creature(self, obj: GameObject) -> bool:
         """Return ``True`` if a creature is player-owned.
 
-        Two paths:
-        - Primary (C# parity, GameObjectExtensions.IsTamed): targeting_team
-          ``>= 50_000``. The breeding sentinel (``2_000_000_000``) is also
-          considered tamed because it falls above the threshold.
-        - Fallback for cryo'd creatures: ARK strips ``TargetingTeam`` on
-          cryopod'd dinos but retains ``TamerString``/``TamedName``/
-          ``TamingTeamID``/etc. Without this fallback we lose every cryo'd
-          tame on the map. (Restored from the pre-0.1.x parser behavior;
-          dropping it caused a ~2k-tame regression on live PvE servers.)
+        Matches legacy ``GameObjectExtensions.IsTamed`` exactly: a creature is
+        tamed iff its ``TargetingTeam`` is a player team (``>= 50_000``; the
+        breeding sentinel ``2_000_000_000`` falls above the threshold). Teams
+        ``< 50_000`` are wild / AI.
+
+        Cryopod-embedded tames are NOT actors in the world-object graph -- they
+        are decoded separately via :meth:`iter_cryopod_creatures` -- so this
+        only classifies in-world actor creatures. An earlier marker-property
+        fallback (treat any creature carrying ``TamingTeamID``/``TamerString``/
+        etc. as tamed) was removed: it mis-classified wild creatures carrying a
+        leftover ``TamingTeamID`` as tames (14 false positives on TheIsland,
+        all with no ``TamedName``) while catching 0 real tames on a busy
+        server, diverging from the legacy pure-team rule.
         """
+        assert obj is not None, "creature object required"
         targeting_team = obj.get_property_value("TargetingTeam")
-        if isinstance(targeting_team, (int, float)):
-            if int(targeting_team) >= self._PLAYER_TEAM_THRESHOLD:
-                return True
-        return any(
-            obj.get_property_value(prop_name) not in (None, "", 0, 0.0, False)
-            for prop_name in self._TAMED_MARKER_PROPERTIES
-        )
+        if not isinstance(targeting_team, (int, float)):
+            return False
+        return int(targeting_team) >= self._PLAYER_TEAM_THRESHOLD
 
     def get_creatures(self) -> list[GameObject]:
         """Return all creature objects (tamed **and** wild)."""

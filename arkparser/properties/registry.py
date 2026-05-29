@@ -10,7 +10,7 @@ from __future__ import annotations
 import typing as t
 
 from ..common.binary_reader import BinaryReader
-from ..common.exceptions import UnknownPropertyError
+from ..common.exceptions import ArkParseError, UnknownPropertyError
 from ..structs import registry as struct_registry
 from . import compound as compound_properties
 from .base import NameTable, Property, PropertyHeader, read_property_header
@@ -35,6 +35,11 @@ from .primitives import (
 
 # Type alias for property reader functions
 PropertyReader = t.Callable[[BinaryReader, PropertyHeader, bool], Property]
+
+# Static upper bound on the number of properties in one object's property list
+# (Power-of-10 rule 2). Real objects carry well under a few hundred; this only
+# trips on a corrupt / non-terminating stream.
+MAX_PROPERTIES_PER_LIST = 100_000
 
 
 # Registry mapping type names to their reader classes
@@ -152,16 +157,24 @@ def read_properties(
 
     Raises:
         UnknownPropertyError: If any property type is not recognized.
+        ArkParseError: If the list exceeds ``MAX_PROPERTIES_PER_LIST`` (a
+            corrupt stream that never yields the "None" terminator).
     """
     properties: list[Property] = []
 
-    while True:
+    # Power-of-10 rule 2: the loop is bounded by an explicit, statically-
+    # provable iteration cap rather than relying on the "None" terminator /
+    # EOF. No real object's property list approaches this; exceeding it means
+    # the stream is corrupt and we should fail loudly, not spin.
+    for _ in range(MAX_PROPERTIES_PER_LIST):
         prop = read_property(reader, is_asa, name_table=name_table, worldsave_format=worldsave_format)
         if prop is None:
-            break
+            return properties
         properties.append(prop)
-
-    return properties
+    raise ArkParseError(
+        f"property list exceeded {MAX_PROPERTIES_PER_LIST} entries at "
+        f"position {reader.position}; stream is likely corrupt"
+    )
 
 
 def read_properties_as_dict(

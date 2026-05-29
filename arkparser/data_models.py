@@ -364,6 +364,14 @@ class CryopodCreature:
                         props_dict[key] = p.value
                     obj["properties"] = props_dict
                 except Exception:
+                    # Don't let one drifted object silently zero out: log it so
+                    # cryopod decode regressions surface instead of returning
+                    # empty stats with no diagnostic (was a blind swallow).
+                    logger.debug(
+                        "Failed to parse cryopod object properties at offset %s",
+                        obj.get("props_offset"),
+                        exc_info=True,
+                    )
                     obj["properties"] = {}
 
             # Find creature object (first one) and status component
