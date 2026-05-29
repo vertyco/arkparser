@@ -48,7 +48,10 @@ from arkparser.files import CloudInventory, Profile, Tribe
 logger = logging.getLogger(__name__)
 
 _CRYOPOD_CLASS_PATTERNS: tuple[str, ...] = (
-    "Cryopod", "SoulTrap", "Vivarium", "DinoBall",
+    "Cryopod",
+    "SoulTrap",
+    "Vivarium",
+    "DinoBall",
 )
 
 
@@ -89,18 +92,36 @@ def _decode_inventory_cryopod(item_obj: t.Any) -> CryopodCreature | None:
                 return cryo
     return None
 
+
 _RICH_COLOR_RE = re.compile(r"<RichColor[^>]*>|</>")
 _LOG_RE = re.compile(r"Day\s+(\d+),?\s+([\d:]+):\s*(.*)", re.DOTALL)
 
 _STAT_NAMES: tuple[str, ...] = (
-    "hp", "stam", "torp", "oxy", "food", "water",
-    "temp", "weight", "melee", "speed", "fort", "craft",
+    "hp",
+    "stam",
+    "torp",
+    "oxy",
+    "food",
+    "water",
+    "temp",
+    "weight",
+    "melee",
+    "speed",
+    "fort",
+    "craft",
 )
 _STAT_INDEX: dict[str, int] = {name: i for i, name in enumerate(_STAT_NAMES)}
 # Legacy ASVExport keeps stats in this order in JSON; the trailing four were
 # never emitted by legacy and are appended after the legacy block.
 _LEGACY_STAT_ORDER: tuple[str, ...] = (
-    "hp", "stam", "melee", "weight", "speed", "food", "oxy", "craft",
+    "hp",
+    "stam",
+    "melee",
+    "weight",
+    "speed",
+    "food",
+    "oxy",
+    "craft",
 )
 _EXTRA_STAT_ORDER: tuple[str, ...] = ("torp", "water", "temp", "fort")
 _FLAT_STAT_ORDER: tuple[str, ...] = _LEGACY_STAT_ORDER + _EXTRA_STAT_ORDER
@@ -158,41 +179,154 @@ def _compact(data: dict[str, t.Any], legacy: frozenset[str]) -> dict[str, t.Any]
     return {k: v for k, v in data.items() if k in legacy or v not in _EMPTY_DEFAULTS}
 
 
-LEGACY_TAMED_KEYS: frozenset[str] = frozenset({
-    "id", "tribeid", "tribe", "tamer", "imprinter", "imprint", "creature",
-    "name", "sex", "base", "lvl", "lat", "lon",
-    "hp-w", "stam-w", "melee-w", "weight-w", "speed-w", "food-w", "oxy-w", "craft-w",
-    "hp-t", "stam-t", "melee-t", "weight-t", "speed-t", "food-t", "oxy-t", "craft-t",
-    "c0", "c1", "c2", "c3", "c4", "c5",
-    "mut-f", "mut-m", "cryo", "ccc", "dinoid",
-    "isMating", "isNeutered", "isClone",
-    "tamedServer", "uploadedServer", "maturation", "traits", "inventory",
-})
-LEGACY_WILD_KEYS: frozenset[str] = frozenset({
-    "id", "creature", "sex", "lvl", "lat", "lon",
-    "hp", "stam", "melee", "weight", "speed", "food", "oxy", "craft",
-    "c0", "c1", "c2", "c3", "c4", "c5",
-    "ccc", "dinoid", "tameable", "trait",
-})
-LEGACY_PLAYER_KEYS: frozenset[str] = frozenset({
-    "playerid", "steam", "name", "tribeid", "tribe", "sex", "lvl",
-    "lat", "lon",
-    "hp", "stam", "melee", "weight", "speed", "food", "water", "oxy", "craft", "fort",
-    "active", "ccc", "achievements", "inventory", "netAddress",
-    "steamid", "dataFile",
-})
-LEGACY_TRIBE_KEYS: frozenset[str] = frozenset({
-    "tribeid", "tribe", "players", "members",
-    "tames", "uploadedTames", "structures",
-    "active", "dataFile",
-})
-LEGACY_STRUCT_KEYS: frozenset[str] = frozenset({
-    "id", "tribeid", "tribe", "struct", "name", "locked", "created", "inventory",
-    "lat", "lon", "ccc", "isSwitchedOn",
-})
-LEGACY_MAP_STRUCT_KEYS: frozenset[str] = frozenset({
-    "struct", "inventory", "lat", "lon", "ccc",
-})
+LEGACY_TAMED_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "tribeid",
+        "tribe",
+        "tamer",
+        "imprinter",
+        "imprint",
+        "creature",
+        "name",
+        "sex",
+        "base",
+        "lvl",
+        "lat",
+        "lon",
+        "hp-w",
+        "stam-w",
+        "melee-w",
+        "weight-w",
+        "speed-w",
+        "food-w",
+        "oxy-w",
+        "craft-w",
+        "hp-t",
+        "stam-t",
+        "melee-t",
+        "weight-t",
+        "speed-t",
+        "food-t",
+        "oxy-t",
+        "craft-t",
+        "c0",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "mut-f",
+        "mut-m",
+        "cryo",
+        "ccc",
+        "dinoid",
+        "isMating",
+        "isNeutered",
+        "isClone",
+        "tamedServer",
+        "uploadedServer",
+        "maturation",
+        "traits",
+        "inventory",
+    }
+)
+LEGACY_WILD_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "creature",
+        "sex",
+        "lvl",
+        "lat",
+        "lon",
+        "hp",
+        "stam",
+        "melee",
+        "weight",
+        "speed",
+        "food",
+        "oxy",
+        "craft",
+        "c0",
+        "c1",
+        "c2",
+        "c3",
+        "c4",
+        "c5",
+        "ccc",
+        "dinoid",
+        "tameable",
+        "trait",
+    }
+)
+LEGACY_PLAYER_KEYS: frozenset[str] = frozenset(
+    {
+        "playerid",
+        "steam",
+        "name",
+        "tribeid",
+        "tribe",
+        "sex",
+        "lvl",
+        "lat",
+        "lon",
+        "hp",
+        "stam",
+        "melee",
+        "weight",
+        "speed",
+        "food",
+        "water",
+        "oxy",
+        "craft",
+        "fort",
+        "active",
+        "ccc",
+        "achievements",
+        "inventory",
+        "netAddress",
+        "steamid",
+        "dataFile",
+    }
+)
+LEGACY_TRIBE_KEYS: frozenset[str] = frozenset(
+    {
+        "tribeid",
+        "tribe",
+        "players",
+        "members",
+        "tames",
+        "uploadedTames",
+        "structures",
+        "active",
+        "dataFile",
+    }
+)
+LEGACY_STRUCT_KEYS: frozenset[str] = frozenset(
+    {
+        "id",
+        "tribeid",
+        "tribe",
+        "struct",
+        "name",
+        "locked",
+        "created",
+        "inventory",
+        "lat",
+        "lon",
+        "ccc",
+        "isSwitchedOn",
+    }
+)
+LEGACY_MAP_STRUCT_KEYS: frozenset[str] = frozenset(
+    {
+        "struct",
+        "inventory",
+        "lat",
+        "lon",
+        "ccc",
+    }
+)
 
 
 def _stat_array(status: t.Any, prop_name: str) -> list[int]:
@@ -273,10 +407,7 @@ def _flat_stats(points: list[int], suffix: str = "") -> dict[str, int]:
     temp, fort) are appended at the end.
     """
     sep = "-" if suffix else ""
-    return {
-        f"{name}{sep}{suffix}": points[_STAT_INDEX[name]]
-        for name in _FLAT_STAT_ORDER
-    }
+    return {f"{name}{sep}{suffix}": points[_STAT_INDEX[name]] for name in _FLAT_STAT_ORDER}
 
 
 def _gps_payload(
@@ -624,77 +755,81 @@ def _inventory_component(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
 # representing internal save plumbing we strip from the ``stats`` subdict.
 # Stripping these is the difference between meaningful per-item stats and
 # unbounded snake_case dumps of UE4 internals.
-_ITEM_STATS_SKIP: frozenset[str] = frozenset({
-    # Already surfaced at top level of inventory entry.
-    # (ItemID is kept and combined into ``stats.id`` for unique tracking)
-    "ItemQuantity",
-    "bIsBlueprint",
-    # Internal save plumbing / object refs.
-    "OwnerInventory",
-    "ItemCustomClass",
-    "CustomItemDatas",       # cryopod blob, surfaced via dino_* keys
-    "CustomItemData",
-    "CustomItemName",
-    "CustomItemDescription",
-    # Internal timestamps / versioning, opaque to consumers.
-    "LastAutoDurabilityDecreaseTime",
-    "ItemVersion",
-    "CreationTime",
-    "LastUseTime",
-    # UI / engine state flags. Not item state, not actionable downstream.
-    "bAllowRemovalFromInventory",
-    "bHideFromInventoryDisplay",
-    "bHideFromRemoteInventoryDisplay",
-    "bCanSlot",
-    "bAllowEquppingItem",    # sic, ARK typo preserved in save format
-    "bIsInitialItem",
-    "bForcePreventGrinding",
-    "bIsEngram",             # redundant with item class
-    "bIsCustomRecipe",
-    "bIsFoodRecipe",
-    "bIsRepairing",
-    "bIsEquipped",
-    "bIsSlot",
-    "bAllowRemovalFromSteamInventory",
-    "bIsFromAllClustersInventory",
-    "bFromSteamInventory",
-    # Cloud / tribute internals.
-    "ItemArchetype",         # blueprint path, redundant with itemId
-    "SteamUserItemID",       # always empty array on cluster items
-    "UploadEarliestValidTime",
-    "ExpirationTimeUTC",     # tribute expiry, opaque UTC seconds
-    "ClusterSpoilingTimeUTC",
-    "CraftingSkill",         # 0 on uploaded items
-    "ItemProfileVersion",    # internal versioning
-    "bNetInfoFromClient",    # net replication flag
-    "OwnerPlayerDataID",     # 0 on uploaded items
-    "LastOwnerPlayer",       # -1 sentinel on uploaded items
-    "ItemStatClampsMultiplier",
-    "OwnerPlayerDataId",     # ASA casing variant of OwnerPlayerDataID
-    # ASA cosmetic / cluster noise.
-    "CustomCosmeticAuthVars",
-    "CustomCosmeticModSkinReplacementID",
-    "CustomCosmeticModSkinVariantID",
-    "bDoApplyOriginalColorsWhenUnskinned",
-    "bIsFromClubArk",
-})
+_ITEM_STATS_SKIP: frozenset[str] = frozenset(
+    {
+        # Already surfaced at top level of inventory entry.
+        # (ItemID is kept and combined into ``stats.id`` for unique tracking)
+        "ItemQuantity",
+        "bIsBlueprint",
+        # Internal save plumbing / object refs.
+        "OwnerInventory",
+        "ItemCustomClass",
+        "CustomItemDatas",  # cryopod blob, surfaced via dino_* keys
+        "CustomItemData",
+        "CustomItemName",
+        "CustomItemDescription",
+        # Internal timestamps / versioning, opaque to consumers.
+        "LastAutoDurabilityDecreaseTime",
+        "ItemVersion",
+        "CreationTime",
+        "LastUseTime",
+        # UI / engine state flags. Not item state, not actionable downstream.
+        "bAllowRemovalFromInventory",
+        "bHideFromInventoryDisplay",
+        "bHideFromRemoteInventoryDisplay",
+        "bCanSlot",
+        "bAllowEquppingItem",  # sic, ARK typo preserved in save format
+        "bIsInitialItem",
+        "bForcePreventGrinding",
+        "bIsEngram",  # redundant with item class
+        "bIsCustomRecipe",
+        "bIsFoodRecipe",
+        "bIsRepairing",
+        "bIsEquipped",
+        "bIsSlot",
+        "bAllowRemovalFromSteamInventory",
+        "bIsFromAllClustersInventory",
+        "bFromSteamInventory",
+        # Cloud / tribute internals.
+        "ItemArchetype",  # blueprint path, redundant with itemId
+        "SteamUserItemID",  # always empty array on cluster items
+        "UploadEarliestValidTime",
+        "ExpirationTimeUTC",  # tribute expiry, opaque UTC seconds
+        "ClusterSpoilingTimeUTC",
+        "CraftingSkill",  # 0 on uploaded items
+        "ItemProfileVersion",  # internal versioning
+        "bNetInfoFromClient",  # net replication flag
+        "OwnerPlayerDataID",  # 0 on uploaded items
+        "LastOwnerPlayer",  # -1 sentinel on uploaded items
+        "ItemStatClampsMultiplier",
+        "OwnerPlayerDataId",  # ASA casing variant of OwnerPlayerDataID
+        # ASA cosmetic / cluster noise.
+        "CustomCosmeticAuthVars",
+        "CustomCosmeticModSkinReplacementID",
+        "CustomCosmeticModSkinVariantID",
+        "bDoApplyOriginalColorsWhenUnskinned",
+        "bIsFromClubArk",
+    }
+)
 
 # Egg-genetic fields in ArkTributeItem are populated with garbage struct
 # overlap bytes for non-egg items. Only surface them when the item is
 # actually an egg.
-_EGG_ONLY_FIELDS: frozenset[str] = frozenset({
-    "egg_number_of_level_up_points_applied",
-    "egg_tamed_ineffectiveness_modifier",
-    "egg_color_set_indices",
-    "egg_gender_override",
-    "egg_dino_ancestors",
-    "egg_dino_ancestors_male",
-    "egg_random_mutations_female",
-    "egg_random_mutations_male",
-    "egg_number_mutations_applied",
-    "egg_number_of_mutations_applied",  # "NumberOf" variant (matches EggNumberOfLevelUpPointsApplied naming)
-    "egg_dino_gene_traits",
-})
+_EGG_ONLY_FIELDS: frozenset[str] = frozenset(
+    {
+        "egg_number_of_level_up_points_applied",
+        "egg_tamed_ineffectiveness_modifier",
+        "egg_color_set_indices",
+        "egg_gender_override",
+        "egg_dino_ancestors",
+        "egg_dino_ancestors_male",
+        "egg_random_mutations_female",
+        "egg_random_mutations_male",
+        "egg_number_mutations_applied",
+        "egg_number_of_mutations_applied",  # "NumberOf" variant (matches EggNumberOfLevelUpPointsApplied naming)
+        "egg_dino_gene_traits",
+    }
+)
 
 
 def _is_meaningful_value(value: t.Any) -> bool:
@@ -745,9 +880,7 @@ def _is_default(key: str, value: t.Any) -> bool:
         return False
     default = _STAT_KEY_DEFAULTS[key]
     if isinstance(default, list) and isinstance(value, list):
-        return len(value) == len(default) and all(
-            a == b for a, b in zip(value, default)
-        )
+        return len(value) == len(default) and all(a == b for a, b in zip(value, default, strict=True))
     if isinstance(default, dict) and isinstance(value, dict):
         # Vector structs are sometimes keyed X/Y/Z (ASA) instead of x/y/z;
         # compare case-insensitively so a zero drop_location still prunes.
@@ -779,20 +912,21 @@ def _flatten_color_array(value: t.Any) -> dict[str, int]:
                 continue  # struct-valued color (LinearColor) etc; not a palette index
     return out
 
+
 # ARK universal 8-slot ItemStatValues map. Each slot is raw uint16; the
 # displayed percentage = raw * per-blueprint multiplier (in the item's UE
 # blueprint, not the save). Slot semantics stable across all item classes;
 # names disambiguated from top-level entries (e.g. ``durability_max`` for
 # the multiplier slot vs ``durability`` for current condition 0-1).
 _ITEM_STAT_SLOT_NAMES: tuple[str, ...] = (
-    "gen_quality",       # rarely populated
+    "gen_quality",  # rarely populated
     "armor",
     "durability_max",
-    "damage",            # weapon damage %
-    "clip_size",         # weapon clip multiplier (NOT currently-loaded ammo)
-    "hypo",              # hypothermal insulation
+    "damage",  # weapon damage %
+    "clip_size",  # weapon clip multiplier (NOT currently-loaded ammo)
+    "hypo",  # hypothermal insulation
     "weight",
-    "hyper",             # hyperthermal insulation
+    "hyper",  # hyperthermal insulation
 )
 
 # Snake_case property name → shorter consumer-facing name. Applied after
@@ -925,6 +1059,7 @@ def _expand_stat_slots(raw_slot_values: t.Any) -> dict[str, t.Any]:
             out[_ITEM_STAT_SLOT_NAMES[idx]] = v
     return out
 
+
 _PASCAL_SNAKE_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
 _PASCAL_SNAKE_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
 
@@ -1001,13 +1136,27 @@ def _inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t
     inv = _inventory_component(obj, lookup)
     if inv is None:
         return []
-    refs = _prop(inv, "InventoryItems")
-    if not isinstance(refs, list):
+    # Legacy builds each holder's inventory from BOTH InventoryItems and
+    # EquippedItems (ContentContainer.cs:1355-1420): saddles / armor / costumes
+    # live in EquippedItems and would otherwise be dropped. Inventory first,
+    # then equipped, matching legacy order.
+    refs: list[t.Any] = []
+    inv_refs = _prop(inv, "InventoryItems")
+    if isinstance(inv_refs, list):
+        refs.extend(inv_refs)
+    equipped_refs = _prop(inv, "EquippedItems")
+    if isinstance(equipped_refs, list):
+        refs.extend(equipped_refs)
+    if not refs:
         return []
     items: list[dict[str, t.Any]] = []
     for ref in refs:
         item_obj = _resolve(ref, lookup)
         if item_obj is None:
+            continue
+        # Legacy skips engram entries when building inventory (ContentPack.cs:747
+        # ``if (!invItem.IsEngram)``): they are recipe placeholders, not items.
+        if bool(_prop(item_obj, "bIsEngram", default=False)):
             continue
         class_name = str(getattr(item_obj, "class_name", "") or "")
         entry: dict[str, t.Any] = {
@@ -1084,11 +1233,7 @@ def _tamed_dict(
     # Legacy negates the id of stored (cryo/vivarium) creatures so they don't
     # collide with live tames (ContentTamedCreature.cs:122-126/228-232). The
     # dinoid field stays positive (C# sets DinoId = Id.ToString() before negating).
-    is_stored = (
-        stored
-        or bool(_prop(obj, "IsInCryo", default=False))
-        or bool(_prop(obj, "IsInVivarium", default=False))
-    )
+    is_stored = stored or bool(_prop(obj, "IsInCryo", default=False)) or bool(_prop(obj, "IsInVivarium", default=False))
     display_id = -dino_id if (is_stored and dino_id != 0) else dino_id
     # Legacy blanks the tamer once a creature is imprinted (ContentTamedCreature
     # .cs:109-114/215-220): imprinted dinos report an imprinter, not a tamer.
@@ -1134,8 +1279,7 @@ def _tamed_dict(
         "dinoid": _dino_id_str(raw_id1, raw_id2, is_asa),
         "isMating": bool(_prop(obj, "bEnableTamedMating", default=False)),
         "isNeutered": bool(_prop(obj, "bNeutered", default=False)),
-        "isClone": bool(_prop(obj, "bIsClone", default=False))
-            or bool(_prop(obj, "bIsCloneDino", default=False)),
+        "isClone": bool(_prop(obj, "bIsClone", default=False)) or bool(_prop(obj, "bIsCloneDino", default=False)),
         "tamedServer": _str(_prop(obj, "TamedOnServerName")),
         "uploadedServer": _str(_prop(obj, "UploadedFromServerName")),
         "maturation": str(int(baby_age * 100)),
@@ -1152,17 +1296,17 @@ def _tamed_dict(
         "experience": _int(_prop(status, "ExperiencePoints")),
         "wandering": bool(_prop(obj, "bEnableTamedWandering", default=False)),
         "tamed_at": (
-            d.isoformat()
-            if (d := _approx_real_datetime(_prop(obj, "TamedAtTime"), save)) is not None
-            else None
+            d.isoformat() if (d := _approx_real_datetime(_prop(obj, "TamedAtTime"), save)) is not None else None
         ),
         "last_ally_in_range": (
             d.isoformat()
-            if (d := _approx_real_datetime(
-                _prop(obj, "LastInAllyRangeTime")
-                or _prop(obj, "LastInAllyRangeSerialized"),
-                save,
-            )) is not None
+            if (
+                d := _approx_real_datetime(
+                    _prop(obj, "LastInAllyRangeTime") or _prop(obj, "LastInAllyRangeSerialized"),
+                    save,
+                )
+            )
+            is not None
             else None
         ),
         "current_stats": _current_stats_dict(status),
@@ -1225,16 +1369,13 @@ def export_tamed(save: t.Any, map_config: MapConfig | None = None) -> list[dict[
     objects = _world_objects(save, "get_tamed_creatures", "tamed_objects")
     lookup = _save_lookup(save)
     results: list[dict[str, t.Any]] = [
-        _tamed_dict(obj, _status_for(obj, lookup), lookup, map_config, save)
-        for obj in objects
+        _tamed_dict(obj, _status_for(obj, lookup), lookup, map_config, save) for obj in objects
     ]
     results.extend(_export_world_cryopods(save, map_config))
     return results
 
 
-def _build_item_owner_lookup(
-    save: t.Any, lookup: dict[t.Any, t.Any]
-) -> dict[t.Any, dict[str, t.Any]]:
+def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.Any, dict[str, t.Any]]:
     """Map inventory-item id → owning container info.
 
     For every object that has an ``InventoryItems`` property (structures,
@@ -1331,8 +1472,7 @@ class _SyntheticGameObject:
     ``get_property_value`` on them just like a real ``GameObject``.
     """
 
-    __slots__ = ("class_name", "id", "guid", "names", "location", "properties",
-                 "components", "is_item", "_props")
+    __slots__ = ("class_name", "id", "guid", "names", "location", "properties", "components", "is_item", "_props")
 
     def __init__(self, class_name: str, props: dict[str, t.Any]) -> None:
         self.class_name = class_name
@@ -1392,9 +1532,7 @@ def _cryo_tamed_record(
     if ut:
         # uploadedTime doubles as the downstream "is uploaded" discriminator.
         try:
-            record["uploadedTime"] = dt.datetime.fromtimestamp(
-                ut, tz=dt.timezone.utc
-            ).isoformat()
+            record["uploadedTime"] = dt.datetime.fromtimestamp(ut, tz=dt.timezone.utc).isoformat()
         except (OverflowError, OSError, ValueError):
             pass
     return record
@@ -1473,7 +1611,8 @@ def export_cluster_uploads(
                 continue
             upload_time = _int(entry.get("UploadTime"))
             _append_unique_tame(
-                out, seen_ids,
+                out,
+                seen_ids,
                 _cryo_tamed_record(cryo, map_config, empty_lookup, upload_time),
             )
         # Cryopods uploaded as items (rare but present, especially in ASA
@@ -1485,7 +1624,8 @@ def export_cluster_uploads(
             if cryo is None:
                 continue
             _append_unique_tame(
-                out, seen_ids,
+                out,
+                seen_ids,
                 _cryo_tamed_record(cryo, map_config, empty_lookup, _int(item.upload_time)),
             )
     return out
@@ -1544,18 +1684,14 @@ def _uploaded_item_dict(item: t.Any, save: t.Any = None) -> dict[str, t.Any]:
     # epoch in the outer UploadTime (CreationTime is 0), so fall back to that.
     # Always emit an ISO string (never a raw int) so the field type is stable.
     iso: str | None = None
-    creation_time = (
-        _float(ark_tribute.get("CreationTime")) if isinstance(ark_tribute, dict) else 0.0
-    )
+    creation_time = _float(ark_tribute.get("CreationTime")) if isinstance(ark_tribute, dict) else 0.0
     if creation_time and save is not None:
         anchored = _approx_real_datetime(creation_time, save)
         if anchored is not None:
             iso = anchored.isoformat()
     if iso is None and item.upload_time:
         try:
-            iso = dt.datetime.fromtimestamp(
-                float(item.upload_time), tz=dt.timezone.utc
-            ).isoformat()
+            iso = dt.datetime.fromtimestamp(float(item.upload_time), tz=dt.timezone.utc).isoformat()
         except (OverflowError, OSError, ValueError, TypeError):
             iso = None
     if iso is not None:
@@ -1628,9 +1764,11 @@ def export_cloud_inventory(
     }
 
 
-_NONTAMEABLE_CLASSES: frozenset[str] = frozenset({
-    "Xenomorph_Character_BP_Female_C",  # Reaper Queen
-})
+_NONTAMEABLE_CLASSES: frozenset[str] = frozenset(
+    {
+        "Xenomorph_Character_BP_Female_C",  # Reaper Queen
+    }
+)
 
 _MEGA_ALPHA_RE = re.compile(r"Mega[A-Z]|Mega_|Alpha_")
 
@@ -1747,9 +1885,7 @@ def _player_from_object(
     stat_points = _stat_array(status, "NumberOfLevelUpPointsApplied")
     player_id = _int(_prop(obj, "PlayerDataID")) or _int(_prop(obj, "LinkedPlayerDataID"))
     tribe_id = _int(_prop(obj, "TribeID")) or _int(_prop(obj, "TribeId")) or _int(_prop(obj, "TargetingTeam"))
-    last_active_seconds = _float(
-        _prop(obj, "SavedLastTimeHadController") or _prop(obj, "LastTimeHadController")
-    )
+    last_active_seconds = _float(_prop(obj, "SavedLastTimeHadController") or _prop(obj, "LastTimeHadController"))
     active_dt = _approx_real_datetime(last_active_seconds, save)
     gps = _gps_payload(obj, map_config, ndigits=2)
     inv_lookup = lookup if lookup is not None else {}
@@ -1858,6 +1994,80 @@ def _cluster_items_by_xuid(
     return out
 
 
+def _player_record_for(
+    entry: t.Any,
+    save: t.Any,
+    pawn_status_by_id: dict[int, t.Any],
+    lookup: dict[t.Any, t.Any],
+    map_config: MapConfig | None,
+) -> tuple[dict[str, t.Any] | None, list[str]]:
+    """Build ``(record, join_keys)`` for one ``save.profiles`` entry.
+
+    ``join_keys`` are matched against the cloud-file stem (Steam id on ASE,
+    hex UUID on ASA) to splice cluster uploads. Returns ``(None, [])`` when a
+    wrapped pawn entry carries no usable profile object.
+    """
+    join_keys: list[str] = []
+    if isinstance(entry, Profile):
+        record = _player_from_profile(entry, save, pawn_status_by_id)
+        if entry.source_path is not None and entry.source_path.stem:
+            join_keys.append(entry.source_path.stem)
+        if entry.unique_id:
+            join_keys.append(entry.unique_id)
+        return record, join_keys
+    profile_obj = getattr(entry, "profile", None)
+    if profile_obj is None and getattr(entry, "objects", None):
+        profile_obj = entry.objects[0]
+    if profile_obj is None:
+        return None, join_keys
+    status_obj = None
+    for o in getattr(entry, "objects", []) or []:
+        cn = str(getattr(o, "class_name", ""))
+        if "StatusComponent" in cn or "CharacterStatus" in cn:
+            status_obj = o
+            break
+    record = _player_from_object(profile_obj, status_obj, lookup, map_config, save)
+    sid = record.get("steamid")
+    if sid:
+        join_keys.append(str(sid))
+    return record, join_keys
+
+
+def _member_stub_player(
+    tid: int,
+    pid: int,
+    name: str,
+    tribe_name: str,
+) -> dict[str, t.Any]:
+    """Stub ASV_Players record for a tribe member that has no ``.arkprofile``.
+
+    Mirrors legacy's member back-fill (ContentContainer.cs): the player is
+    known only by id + name from the tribe's member list, so every other
+    field stays at its default. ``tribeid`` is the containing tribe.
+    """
+    assert pid, "member stub requires a non-zero player id"
+    data: dict[str, t.Any] = {
+        "playerid": pid,
+        "steam": name,
+        "name": name,
+        "tribeid": tid,
+        "tribe": tribe_name,
+        "sex": "Male",
+        "lvl": 0,
+        "lat": 0.0,
+        "lon": 0.0,
+        **_flat_stats([0] * 12),
+        "active": None,
+        "ccc": "0 0 0",
+        "achievements": [],
+        "inventory": [],
+        "netAddress": "",
+        "steamid": "",
+        "dataFile": "",
+    }
+    return _compact(data, LEGACY_PLAYER_KEYS)
+
+
 def export_players(
     save: t.Any,
     map_config: MapConfig | None = None,
@@ -1866,44 +2076,23 @@ def export_players(
     profiles = _collection(save, "profiles", Profile)
     lookup = _save_lookup(save)
     pawn_status_by_id = _player_status_by_data_id(save, lookup)
-    cluster_items = (
-        _cluster_items_by_xuid(cluster_inventories, save) if cluster_inventories else {}
-    )
+    cluster_items = _cluster_items_by_xuid(cluster_inventories, save) if cluster_inventories else {}
+    # Legacy emits each player's tribeid as the CONTAINING tribe's id (the one
+    # whose member list / team claims them), not the profile's own field. The
+    # shared assembly resolves that allocation; reuse it here for parity.
+    allocation = _assemble_tribes(save)
+    profile_tribeid = allocation["profile_tribeid"]
+    tribe_names = allocation["names"]
     results: list[dict[str, t.Any]] = []
     for entry in profiles:
-        record: dict[str, t.Any]
-        # Keys to match against the cloud-file stem, in priority order.
-        join_keys: list[str] = []
+        record, join_keys = _player_record_for(entry, save, pawn_status_by_id, lookup, map_config)
+        if record is None:
+            continue
         if isinstance(entry, Profile):
-            record = _player_from_profile(entry, save, pawn_status_by_id)
-            # The cloud file and the .arkprofile for one player share a stem:
-            # the Steam id on ASE, the hex platform UUID on ASA. The profile's
-            # own source filename stem is therefore the reliable cross-platform
-            # join key. ``unique_id`` only equals it on ASE (on ASA it is the
-            # numeric net id, not the UUID filename), so it is a fallback.
-            if entry.source_path is not None and entry.source_path.stem:
-                join_keys.append(entry.source_path.stem)
-            if entry.unique_id:
-                join_keys.append(entry.unique_id)
-        else:
-            profile_obj = getattr(entry, "profile", None)
-            if profile_obj is None and getattr(entry, "objects", None):
-                profile_obj = entry.objects[0]
-            if profile_obj is None:
-                continue
-            status_obj = None
-            for o in getattr(entry, "objects", []) or []:
-                cn = str(getattr(o, "class_name", ""))
-                if "StatusComponent" in cn or "CharacterStatus" in cn:
-                    status_obj = o
-                    break
-            record = _player_from_object(profile_obj, status_obj, lookup, map_config, save)
-            sid = record.get("steamid")
-            if sid:
-                join_keys.append(str(sid))
-        # Splice cluster-uploaded items into the player's inventory list,
-        # tagged ``uploaded: true`` so consumers can distinguish them from
-        # carried items.
+            tid = profile_tribeid.get(_int(entry.player_id))
+            if tid:
+                record["tribeid"] = tid
+                record["tribe"] = tribe_names.get(tid) or record.get("tribe", "")
         spliced = next((cluster_items[k] for k in join_keys if k in cluster_items), None)
         if spliced:
             inv_list = record.get("inventory")
@@ -1912,6 +2101,9 @@ def export_players(
                 record["inventory"] = inv_list
             inv_list.extend(spliced)
         results.append(record)
+    # Tribe members with no .arkprofile surface as stub players (legacy +N).
+    for tid, pid, name in allocation["member_stubs"]:
+        results.append(_member_stub_player(tid, pid, name, tribe_names.get(tid, "")))
     return results
 
 
@@ -1948,13 +2140,15 @@ def _tribe_members_from_parser(
     for m in tribe.get_members():
         pid = _int(m.get("player_id"))
         profile = profile_index.get(pid) if profile_index else None
-        out.append({
-            "ign": _str(m.get("name")),
-            "lvl": int(profile.level) if profile is not None else 0,
-            "playerid": str(pid),
-            "playername": _str(m.get("name")),
-            "steamid": (profile.unique_id or "") if profile is not None else "",
-        })
+        out.append(
+            {
+                "ign": _str(m.get("name")),
+                "lvl": int(profile.level) if profile is not None else 0,
+                "playerid": str(pid),
+                "playername": _str(m.get("name")),
+                "steamid": (profile.unique_id or "") if profile is not None else "",
+            }
+        )
     return out
 
 
@@ -2040,10 +2234,7 @@ def _tribe_from_object(
     save: t.Any = None,
 ) -> dict[str, t.Any]:
     tribe_id = _int(_prop(obj, "TribeID")) or _int(_prop(obj, "TribeId"))
-    owner_id = (
-        _int(_prop(obj, "OwnerPlayerDataID"))
-        or _int(_prop(obj, "OwnerPlayerDataId"))
-    )
+    owner_id = _int(_prop(obj, "OwnerPlayerDataID")) or _int(_prop(obj, "OwnerPlayerDataId"))
     members: list[dict[str, t.Any]] = []
     i = 0
     while True:
@@ -2053,13 +2244,15 @@ def _tribe_from_object(
         name = _str(_prop(obj, "MembersPlayerName", index=i))
         pid_int = _int(pid)
         profile = profile_index.get(pid_int) if profile_index else None
-        members.append({
-            "ign": name,
-            "lvl": int(profile.level) if profile is not None else 0,
-            "playerid": str(pid_int),
-            "playername": name,
-            "steamid": (profile.unique_id or "") if profile is not None else "",
-        })
+        members.append(
+            {
+                "ign": name,
+                "lvl": int(profile.level) if profile is not None else 0,
+                "playerid": str(pid_int),
+                "playername": name,
+                "steamid": (profile.unique_id or "") if profile is not None else "",
+            }
+        )
         i += 1
     alliances: list[int] = []
     j = 0
@@ -2104,57 +2297,281 @@ def _tribe_object_logs(obj: t.Any) -> list[str]:
     return out
 
 
-def export_tribes(save: t.Any) -> list[dict[str, t.Any]]:
-    tribes = _collection(save, "tribes", Tribe)
+# ---------------------------------------------------------------------------
+# Tribe / player assembly (legacy ContentContainer parity)
+#
+# Legacy ASVExport builds ONE tribe list (ContentContainer.cs:686-1185) that is
+# a superset of the .arktribe files: two sentinels, the file tribes, a solo
+# tribe per profile, and stub tribes for every distinct structure/tame
+# TargetingTeam with no file. Every profile is allocated to exactly one tribe;
+# tribe members without a profile become stub players. ExportJsonPlayerTribes,
+# ExportJsonPlayers and ExportJsonPlayerTribeLogs all iterate this same list,
+# so tribes, players and tribe_logs stay mutually consistent. We reproduce the
+# assembly once (cached on the save) and drive all three exports from it.
+# ---------------------------------------------------------------------------
+_UNCLAIMED_TRIBE_ID = 2_000_000_000  # legacy "[ASV Unclaimed]" sentinel
+_ABANDONED_TRIBE_ID = -(2**31)  # int.MinValue, "[ASV Abandoned]"
+_PLAYER_TEAM_THRESHOLD = 50_000  # ContentContainer.cs:1050
+_MAX_TRIBE_MEMBERS = 100_000  # static loop bound (Power-of-10 r2)
+
+
+def _profile_entries(save: t.Any) -> list[Profile]:
+    """Return the ``Profile`` instances in ``save.profiles`` (skips wrapped pawns)."""
+    entries = getattr(save, "profiles", None) or []
+    out = [e for e in entries if isinstance(e, Profile)]
+    assert isinstance(out, list), "profile entries must be a list"
+    return out
+
+
+def _object_tribe_members(obj: t.Any) -> list[tuple[int, str]]:
+    """Read ``(player_id, name)`` member pairs off an in-world tribe object."""
+    assert obj is not None, "tribe object required"
+    out: list[tuple[int, str]] = []
+    for i in range(_MAX_TRIBE_MEMBERS):
+        pid = _prop(obj, "MembersPlayerDataID", index=i)
+        if pid is None:
+            break
+        out.append((_int(pid), _str(_prop(obj, "MembersPlayerName", index=i))))
+    assert len(out) < _MAX_TRIBE_MEMBERS, "tribe member list exceeded bound"
+    return out
+
+
+def _tribe_entry_info(
+    entry: t.Any,
+    counts: dict[int, dict[str, int]],
+    profile_index: dict[int, Profile],
+    save: t.Any,
+) -> tuple[int, str, list[tuple[int, str]], dict[str, t.Any], list[str]] | None:
+    """Normalize one ``save.tribes`` entry to ``(id, name, members, record, logs)``."""
+    if isinstance(entry, Tribe):
+        members = [(_int(m.get("player_id")), _str(m.get("name"))) for m in entry.get_members()]
+        rec = _tribe_from_parser(entry, counts, profile_index, save)
+        return _int(entry.tribe_id), entry.name or "", members, rec, list(entry.log_entries)
+    obj = getattr(entry, "tribe", None)
+    if obj is None and getattr(entry, "objects", None):
+        obj = entry.objects[0]
+    if obj is None:
+        return None
+    tid = _int(_prop(obj, "TribeID")) or _int(_prop(obj, "TribeId"))
+    rec = _tribe_from_object(obj, counts, profile_index, save)
+    return (
+        tid,
+        _str(_prop(obj, "TribeName")),
+        _object_tribe_members(obj),
+        rec,
+        _tribe_object_logs(obj),
+    )
+
+
+def _distinct_team_names(
+    objects: t.Iterable[t.Any],
+    name_props: tuple[str, ...],
+    min_team: int,
+) -> dict[int, str]:
+    """Map each distinct ``TargetingTeam >= min_team`` to a first-seen name."""
+    out: dict[int, str] = {}
+    for obj in objects:
+        tid = _int(_prop(obj, "TargetingTeam"))
+        if tid < min_team or tid in out:
+            continue
+        name = ""
+        for prop in name_props:
+            name = _str(_prop(obj, prop))
+            if name:
+                break
+        out[tid] = name
+    return out
+
+
+def _allocate_profiles(
+    profiles: list[Profile],
+    file_tribe_ids: set[int],
+    member_index: dict[int, int],
+) -> tuple[dict[int, int], dict[int, list[int]]]:
+    """Allocate each profile to one tribe id (ContentContainer.cs:760-790).
+
+    Priority: explicit profile tribe id when it names an existing tribe ->
+    the tribe whose member list contains the player -> a solo tribe keyed on
+    the player id. Returns ``(player_id -> tribe_id, tribe_id -> [player_id])``.
+    """
+    profile_tribeid: dict[int, int] = {}
+    players_by_tribe: dict[int, list[int]] = {}
+    for prof in profiles:
+        pid = _int(prof.player_id)
+        if not pid:
+            continue
+        explicit = _int(prof.raw_tribe_id)
+        if explicit and explicit in file_tribe_ids:
+            target = explicit
+        elif pid in member_index:
+            target = member_index[pid]
+        else:
+            target = pid
+        profile_tribeid[pid] = target
+        players_by_tribe.setdefault(target, []).append(pid)
+    return profile_tribeid, players_by_tribe
+
+
+def _member_backfill(
+    member_index: dict[int, int],
+    member_name: dict[int, str],
+    profile_tribeid: dict[int, int],
+    players_by_tribe: dict[int, list[int]],
+) -> list[tuple[int, int, str]]:
+    """Tribe members lacking a profile become stub players (legacy back-fill)."""
+    stubs: list[tuple[int, int, str]] = []
+    seen: set[int] = set()
+    for pid, tid in member_index.items():
+        if pid in profile_tribeid or pid in seen:
+            continue
+        seen.add(pid)
+        stubs.append((tid, pid, member_name.get(pid, "")))
+        players_by_tribe.setdefault(tid, []).append(pid)
+    return stubs
+
+
+def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
+    """Build the legacy tribe superset once and cache it on the save."""
+    cached = getattr(save, "_assembled_tribes", None)
+    if isinstance(cached, dict):
+        return cached
     counts = _tribe_counts(save)
     profile_index = _build_profile_index(save)
-    results: list[dict[str, t.Any]] = []
-    for entry in tribes:
-        if isinstance(entry, Tribe):
-            results.append(_tribe_from_parser(entry, counts, profile_index, save))
+    names: dict[int, str] = {}
+    rich: dict[int, dict[str, t.Any]] = {}
+    logs: dict[int, list[str]] = {}
+    member_index: dict[int, int] = {}
+    member_name: dict[int, str] = {}
+    order: list[int] = []
+    for sid, sname in (
+        (_UNCLAIMED_TRIBE_ID, "[ASV Unclaimed]"),
+        (_ABANDONED_TRIBE_ID, "[ASV Abandoned]"),
+    ):
+        names[sid] = sname
+        order.append(sid)
+    for entry in _collection(save, "tribes", Tribe):
+        info = _tribe_entry_info(entry, counts, profile_index, save)
+        if info is None:
             continue
-        tribe_obj = getattr(entry, "tribe", None)
-        if tribe_obj is None and getattr(entry, "objects", None):
-            tribe_obj = entry.objects[0]
-        if tribe_obj is None:
+        tid, name, members, rec, log_entries = info
+        if tid not in rich:
+            order.append(tid)
+        names[tid] = name or names.get(tid, "")
+        rich[tid] = rec
+        logs[tid] = log_entries
+        for pid, mname in members:
+            member_index.setdefault(pid, tid)
+            if mname:
+                member_name.setdefault(pid, mname)
+    file_tribe_ids = set(rich) | {_UNCLAIMED_TRIBE_ID, _ABANDONED_TRIBE_ID}
+    profiles = _profile_entries(save)
+    profile_tribeid, players_by_tribe = _allocate_profiles(profiles, file_tribe_ids, member_index)
+    for prof in profiles:
+        pid = _int(prof.player_id)
+        target = profile_tribeid.get(pid)
+        if target is None or target in names:
             continue
-        results.append(_tribe_from_object(tribe_obj, counts, profile_index, save))
-    return results
+        order.append(target)
+        names[target] = f"Tribe of {prof.character_name or prof.player_name or ''}".strip() if target == pid else ""
+    for getter, props, floor in (
+        ("get_structures", ("OwnerName", "TamerString"), _PLAYER_TEAM_THRESHOLD),
+        ("get_tamed_creatures", ("TribeName", "TamerString"), 1),
+    ):
+        team_names = _distinct_team_names(_world_objects(save, getter, ""), props, floor)
+        for tid, nm in team_names.items():
+            if tid not in names:
+                order.append(tid)
+                names[tid] = nm
+    member_stubs = _member_backfill(member_index, member_name, profile_tribeid, players_by_tribe)
+    result: dict[str, t.Any] = {
+        "order": order,
+        "names": names,
+        "rich": rich,
+        "logs": logs,
+        "counts": counts,
+        "profile_index": profile_index,
+        "players_by_tribe": players_by_tribe,
+        "profile_tribeid": profile_tribeid,
+        "member_stubs": member_stubs,
+        "member_name": member_name,
+    }
+    try:
+        save._assembled_tribes = result
+    except (AttributeError, TypeError):
+        pass
+    return result
+
+
+def _members_for(tid: int, a: dict[str, t.Any]) -> list[dict[str, t.Any]]:
+    """Member dicts for a tribe from its allocated players (profiles + stubs)."""
+    profile_index = a["profile_index"]
+    member_name = a["member_name"]
+    out: list[dict[str, t.Any]] = []
+    for pid in a["players_by_tribe"].get(tid, ()):
+        prof = profile_index.get(pid)
+        if prof is not None:
+            out.append(
+                {
+                    "ign": _str(prof.character_name),
+                    "lvl": int(prof.level),
+                    "playerid": str(pid),
+                    "playername": _str(prof.player_name),
+                    "steamid": prof.unique_id or "",
+                }
+            )
+        else:
+            nm = member_name.get(pid, "")
+            out.append(
+                {
+                    "ign": nm,
+                    "lvl": 0,
+                    "playerid": str(pid),
+                    "playername": nm,
+                    "steamid": "",
+                }
+            )
+    return out
+
+
+def _tribe_record(tid: int, a: dict[str, t.Any]) -> dict[str, t.Any]:
+    """Final ASV_Tribes record for one assembled tribe id.
+
+    File-backed tribes reuse the rich record (active/dataFile/owner/alliances)
+    but have ``players``/``members`` overridden to the allocated-player set so
+    they match the legacy writer (which counts allocated profiles, not the raw
+    member list). Synthesized stubs carry id + name + world-derived counts.
+    """
+    players = a["players_by_tribe"].get(tid, [])
+    base = a["rich"].get(tid)
+    if base is not None:
+        rec = dict(base)
+        rec["players"] = len(players)
+        rec["members"] = _members_for(tid, a)
+        return rec
+    c = a["counts"].get(tid, {})
+    data: dict[str, t.Any] = {
+        "tribeid": tid,
+        "tribe": a["names"].get(tid, ""),
+        "players": len(players),
+        "members": _members_for(tid, a),
+        "tames": c.get("tames", 0),
+        "uploadedTames": 0,
+        "structures": c.get("structures", 0),
+        "active": None,
+        "dataFile": "",
+    }
+    return _compact(data, LEGACY_TRIBE_KEYS)
+
+
+def export_tribes(save: t.Any) -> list[dict[str, t.Any]]:
+    a = _assemble_tribes(save)
+    assert "order" in a, "assembled tribes missing order"
+    return [_tribe_record(tid, a) for tid in a["order"]]
 
 
 def export_tribe_logs(save: t.Any) -> list[dict[str, t.Any]]:
-    tribes = _collection(save, "tribes", Tribe)
-    results: list[dict[str, t.Any]] = []
-    for entry in tribes:
-        if isinstance(entry, Tribe):
-            results.append({
-                "tribeid": entry.tribe_id or 0,
-                "tribe": entry.name or "",
-                "logs": list(entry.log_entries),
-            })
-            continue
-        tribe_obj = getattr(entry, "tribe", None)
-        if tribe_obj is None and getattr(entry, "objects", None):
-            tribe_obj = entry.objects[0]
-        if tribe_obj is None:
-            continue
-        tribe_id = _int(_prop(tribe_obj, "TribeID")) or _int(_prop(tribe_obj, "TribeId"))
-        name = _str(_prop(tribe_obj, "TribeName"))
-        log_val = _prop(tribe_obj, "TribeLog")
-        raw_logs: list[str] = []
-        if isinstance(log_val, list):
-            raw_logs = [str(e) for e in log_val if isinstance(e, str) and e.strip()]
-        else:
-            k = 0
-            while True:
-                val = _prop(tribe_obj, "TribeLog", index=k)
-                if val is None:
-                    break
-                if isinstance(val, str) and val.strip():
-                    raw_logs.append(val)
-                k += 1
-        results.append({"tribeid": tribe_id, "tribe": name, "logs": raw_logs})
-    return results
+    a = _assemble_tribes(save)
+    return [{"tribeid": tid, "tribe": a["names"].get(tid, ""), "logs": a["logs"].get(tid, [])} for tid in a["order"]]
 
 
 def _structure_created(obj: t.Any, save: t.Any) -> str | None:
@@ -2210,40 +2627,77 @@ def _structure_colors(obj: t.Any) -> list[int]:
     return out if any(out) else []
 
 
+# Classes legacy drops from the abandoned-structure bucket (ContentContainer.cs
+# :1060-1070): map elements / crates / nests / veins that are surfaced elsewhere
+# (ASV_MapStructures) or are debug/test actors. Only applied to UNOWNED
+# structures (TargetingTeam < 50000); player-owned ones are always emitted.
+_ABANDONED_EXCLUDE_PREFIXES: tuple[str, ...] = (
+    "BeeHive_C",
+    "ArtifactCrate_",
+    "TributeTerminal_",
+    "SupplyCrate_",
+)
+_ABANDONED_EXCLUDE_CONTAINS: tuple[str, ...] = ("Button_", "Nest_", "Vein_", "Beaver")
+
+
+def _is_excluded_abandoned(class_name: str) -> bool:
+    """True when an unowned structure class is excluded from ASV_Structures."""
+    return class_name.startswith(_ABANDONED_EXCLUDE_PREFIXES) or any(
+        token in class_name for token in _ABANDONED_EXCLUDE_CONTAINS
+    )
+
+
+def _structure_tribe(
+    obj: t.Any,
+    tribe_names: dict[int, str],
+) -> tuple[int, str]:
+    """Resolve ``(tribeid, tribe)`` for a structure, matching legacy.
+
+    Player-owned structures (``TargetingTeam >= 50000``) take that team id and
+    its resolved tribe name (file ``TribeName``, else the structure/tame stub's
+    ``OwnerName``/``TamerString``). Unowned structures fall to the synthetic
+    ``[ASV Abandoned]`` tribe (``int.MinValue``), mirroring ContentContainer.cs.
+    """
+    team = _int(_prop(obj, "TargetingTeam"))
+    if team >= _PLAYER_TEAM_THRESHOLD:
+        name = tribe_names.get(team) or _str(_prop(obj, "OwnerName")) or _str(_prop(obj, "TamerString"))
+        return team, name
+    return _ABANDONED_TRIBE_ID, tribe_names.get(_ABANDONED_TRIBE_ID, "[ASV Abandoned]")
+
+
 def _structure_dict(
     obj: t.Any,
     save: t.Any,
     lookup: dict[t.Any, t.Any],
     map_config: MapConfig | None,
+    tribe_names: dict[int, str],
 ) -> dict[str, t.Any]:
     # Legacy uses BoxName for player-set labels; emit "" if it matches the
     # class name (legacy ContentPack.cs:1596 strips no-rename cases).
     class_name = getattr(obj, "class_name", "") or ""
+    tribeid, tribe_name = _structure_tribe(obj, tribe_names)
     box_name = _str(_prop(obj, "BoxName"))
     if box_name == class_name:
         box_name = ""
-    locked = bool(
-        _prop(obj, "bIsPinLocked", default=False)
-        or _prop(obj, "bIsLocked", default=False)
-    )
-    powered = bool(
-        _prop(obj, "bIsPowered", default=False)
-        or _prop(obj, "bHasFuel", default=False)
-    )
+    locked = bool(_prop(obj, "bIsPinLocked", default=False) or _prop(obj, "bIsLocked", default=False))
+    powered = bool(_prop(obj, "bIsPowered", default=False) or _prop(obj, "bHasFuel", default=False))
     inclusions, exclusions = _feeding_lists(obj)
     _, activated_iso = _iso_pair(obj, "LastActivatedTime", save)
     _, deactivated_iso = _iso_pair(obj, "LastDeactivatedTime", save)
     _, fire_iso = _iso_pair(obj, "LastFireTime", save)
     _, reload_iso = _iso_pair(obj, "LastLongReloadStartTime", save)
     _, fuel_iso = _iso_pair(obj, "LastCheckedFuelTime", save)
-    attached_dino_id = _combine_dino_id(
-        _prop(obj, "AttachedToDinoID1"),
-        _prop(obj, "AttachedToDinoID2"),
-    ) or None
+    attached_dino_id = (
+        _combine_dino_id(
+            _prop(obj, "AttachedToDinoID1"),
+            _prop(obj, "AttachedToDinoID2"),
+        )
+        or None
+    )
     data: dict[str, t.Any] = {
         "id": getattr(obj, "id", 0) or 0,
-        "tribeid": _int(_prop(obj, "TargetingTeam")),
-        "tribe": _str(_prop(obj, "OwnerName")),
+        "tribeid": tribeid,
+        "tribe": tribe_name,
         "struct": class_name,
         "name": box_name,
         "locked": locked,
@@ -2255,12 +2709,15 @@ def _structure_dict(
         "decay_reset": bool(_prop(obj, "bHasResetDecayTime", default=False)),
         "last_ally_in_range": (
             d.isoformat()
-            if (d := _approx_real_datetime(
-                _prop(obj, "LastInAllyRangeTime")
-                or _prop(obj, "LastInAllyRangeTimeSerialized")
-                or _prop(obj, "LastInAllyRangeSerialized"),
-                save,
-            )) is not None
+            if (
+                d := _approx_real_datetime(
+                    _prop(obj, "LastInAllyRangeTime")
+                    or _prop(obj, "LastInAllyRangeTimeSerialized")
+                    or _prop(obj, "LastInAllyRangeSerialized"),
+                    save,
+                )
+            )
+            is not None
             else None
         ),
         "painting_id": _int(_prop(obj, "UniquePaintingId")),
@@ -2306,7 +2763,18 @@ def _structure_dict(
 def export_structures(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
     objects = _world_objects(save, "get_structures", "structure_objects")
     lookup = _save_lookup(save)
-    return [_structure_dict(obj, save, lookup, map_config) for obj in objects]
+    # Reuse the assembled tribe-name map so a structure's ``tribe`` resolves to
+    # the same name the tribes export uses (file TribeName / stub OwnerName).
+    tribe_names = _assemble_tribes(save)["names"]
+    results: list[dict[str, t.Any]] = []
+    for obj in objects:
+        team = _int(_prop(obj, "TargetingTeam"))
+        if team < _PLAYER_TEAM_THRESHOLD and _is_excluded_abandoned(getattr(obj, "class_name", "") or ""):
+            # Unowned map element / crate / debug actor: legacy drops these
+            # from ASV_Structures (surfaced via ASV_MapStructures instead).
+            continue
+        results.append(_structure_dict(obj, save, lookup, map_config, tribe_names))
+    return results
 
 
 # Mirrors C# ContentContainer.cs:846. Order matters: first match wins.
@@ -2441,10 +2909,9 @@ def export_all(
     Note: returns flat lists per type (not the legacy ``{map, day, time, data}``
     envelope). ``export_to_files`` adds the envelope when writing.
     """
-    tamed = export_tamed(save, map_config)
     cluster_invs = _load_cluster_inventories(cluster)
-    if cluster_invs:
-        tamed = tamed + export_cluster_uploads(cluster_invs, map_config)
+    cluster_tamed = export_cluster_uploads(cluster_invs, map_config) if cluster_invs else []
+    tamed = export_tamed(save, map_config) + cluster_tamed
     return {
         _EXPORT_NAMES["tamed"]: tamed,
         _EXPORT_NAMES["wild"]: export_wild(save, map_config),

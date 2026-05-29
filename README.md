@@ -22,7 +22,7 @@ A pure-Python library for parsing ARK: Survival Evolved (ASE) and ARK: Survival 
 - **Cloud Inventory / Obelisk**: uploaded creatures, items, cryopod contents
 - **World Saves** (`.ark`): full map state (creatures, structures, items, players)
 - **Dual format**: automatic ASE (v5-12) / ASA (v13-14+, SQLite) detection
-- **Legacy-parity export**: drop-in JSON output matching `ASVExport.exe` schema, plus parser-only extras under `extra_*` keys
+- **Legacy-parity export**: drop-in JSON output matching `ASVExport.exe` schema, plus parser-only extras under descriptive snake_case keys (no namespace prefix; never overloading a legacy key)
 - **Fast**: pure-Python `BinaryReader` (`int.from_bytes` + `struct.Struct` unpackers, slots-based dataclasses), a 30 MB ASE save (65k objects) loads in ~3s on CPython 3.14
 
 ## Installation
@@ -263,11 +263,8 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `tribe` | legacy | tribe name |
 | `sex` | legacy | `"Female"` / `"Male"` |
 | `lvl` | legacy | `BaseCharacterLevel + ExtraCharacterLevel` |
-| `lat`, `lon` | legacy | `0.0` (profile/cluster files carry no in-world location) |
 | `hp` .. `craft`, `fort` | legacy | `NumberOfLevelUpPointsApplied[i]` (10 visible stats) |
 | `torp`, `temp` | added | same source, indices legacy never emitted |
-| `active` | legacy | last-active datetime; currently `null` (placeholder for parity) |
-| `ccc` | legacy | `"0 0 0"` (no in-world position from profile/cluster source) |
 | `achievements` | legacy | reserved array (currently empty for parity) |
 | `netAddress` | legacy (now populated) | Last client IP ARK persisted (`SavedNetworkAddress` in profile `MyData`). Legacy ASVExport reads the same field (ContentPlayer.cs:157 ASE / :341 ASA). `""` when the profile lacks it (e.g. never-played placeholders). ASA stores a clean IPv4/IPv6 string; some ASE saves store an engine-truncated value (e.g. `"[2001"`) reproduced verbatim, matching legacy. |
 | `steamid`, `dataFile` | legacy | platform net id and `{steamid}.arkprofile` filename |
@@ -291,12 +288,14 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 
 #### `ASV_Tribes` schema
 
+`ASV_Tribes` (and `ASV_TribeLogs` / `ASV_Players`, which iterate the same list) is a **superset** of the loaded `.arktribe` files, mirroring legacy `ContentContainer`: it seeds two sentinels (`[ASV Unclaimed]` id `2000000000`, `[ASV Abandoned]` id `-2147483648`), adds every file-backed tribe, then synthesizes a stub tribe for each player profile not already in a tribe (`Tribe of <name>`, id = `PlayerDataID`), each distinct structure `TargetingTeam` (`>= 50000`), and each distinct in-world tame `TargetingTeam` — deduped by id. Cross-server tribes that exist **only** in cluster cloud-inventory files (no map presence) are not synthesized.
+
 | Field | Origin | Source / formula |
 |---|---|---|
-| `tribeid` | legacy | `TribeID` / parser `Tribe.tribe_id` |
-| `tribe` | legacy | tribe name |
-| `players` | legacy | member count |
-| `members` | legacy | list of `{ign, lvl, playerid, playername, steamid}`. `lvl` and `steamid` only populate when a matching `.arkprofile` is loaded into `save.profiles`, the `.arktribe` file itself doesn't carry per-member level / platform id, so the parser cross-references by `player_id`. Empty (`""`) when no profile is available for that member. |
+| `tribeid` | legacy | `TribeID` / parser `Tribe.tribe_id`, or a synthesized stub/sentinel id (see above) |
+| `tribe` | legacy | tribe name (file `TribeName`; for stubs, `OwnerName`/`TamerString`; or `Tribe of <character>` for a solo) |
+| `players` | legacy | count of players **allocated** to this tribe (profiles whose explicit team / membership / solo id resolves here, plus member back-fill), matching legacy `Players.Count` — not the raw `.arktribe` member count |
+| `members` | legacy | list of `{ign, lvl, playerid, playername, steamid}` built from the allocated players. `lvl` and `steamid` populate from the matching `.arkprofile`; members with no profile (back-filled from the tribe's member list) carry `lvl=0`, `steamid=""`. |
 | `tames`, `structures` | legacy | counts derived from `WorldSave` (creatures + structures whose `TargetingTeam` matches) |
 | `uploadedTames` | legacy | reserved (currently `0`) |
 | `active` | legacy | ISO 8601 datetime of the most recent tribe log entry, converted from in-game "Day N, HH:MM:SS" via the save's anchor. `null` when no parseable log entries or anchors are missing. |
@@ -318,9 +317,9 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | Field | Origin | Source / formula |
 |---|---|---|
 | `id` | added | `GameObject.id`, internal numeric identifier. Cross-references the values in other records' `linked_structures` / `saddle_structures` / `attached_dino_id` lists. |
-| `tribeid` | legacy | `TargetingTeam` |
-| `tribe` | legacy | `OwnerName` |
-| `struct` | legacy | `GameObject.class_name` |
+| `tribeid` | legacy | `TargetingTeam` for player-owned structures (`>= 50000`). Unowned structures fall to the synthetic `[ASV Abandoned]` tribe id `-2147483648` (legacy `int.MinValue`), mirroring `ContentContainer.cs`. |
+| `tribe` | legacy | resolved owning-tribe name: the loaded `.arktribe` `TribeName`, else the structure's `OwnerName` / `TamerString`; `"[ASV Abandoned]"` for unowned. (Legacy emits the resolved tribe name, not the raw `OwnerName`.) |
+| `struct` | legacy | `GameObject.class_name`. Unowned map elements / crates / debug actors (`Button_*`, `*Vein_*`, `*Nest_*`, `*Beaver*`, `BeeHive_C`, `ArtifactCrate_*`, `TributeTerminal_*`, `SupplyCrate_*`) are excluded — surfaced via `ASV_MapStructures` instead, matching legacy's abandoned-structure filter. |
 | `name` | legacy | `BoxName` (empty when it matches the class name, mirroring legacy's no-rename strip) |
 | `locked` | legacy | `bIsPinLocked` or `bIsLocked` |
 | `created` | legacy (richer) | ISO 8601 datetime with the local TZ of the parser machine, computed `save.file_mtime + (OriginalCreationTime - game_time)` (mirrors legacy `ContentContainer.GetApproxDateTimeOf`). `null` when the anchors are missing. |
@@ -328,7 +327,6 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `lat`, `lon`, `ccc` | legacy | location via `MapConfig`, **rounded to 2 decimals** (parser-only nicety, not legacy parity) |
 | `isSwitchedOn` | legacy | `bContainerActivated`, emitted only when the structure is powered (`bIsPowered` or `bHasFuel`); omitted otherwise. Mirrors legacy `ContentStructure.cs` / `ContentPack.cs` (`IsSwitchedOn.HasValue`). |
 | `decay_reset` | added | `bHasResetDecayTime` |
-| `last_ally_in_range_seconds` | added | raw `LastInAllyRangeTime` / `LastInAllyRangeTimeSerialized` / `LastInAllyRangeSerialized` (in-game seconds, float) |
 | `last_ally_in_range` | added | ISO 8601 datetime with local TZ. `null` when the save lacks the anchors. |
 | `painting_id` | added | `UniquePaintingId` |
 | `feeding_inclusions` | added | `FeedingDinoList` class names when `DinoFeedingListType == 1` (ASA feeding troughs) |
