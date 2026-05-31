@@ -63,7 +63,7 @@ def _read_worldsave_simple_prefix(reader: BinaryReader) -> tuple[int, int, int]:
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class Int8Property(Property):
     """Signed 8-bit integer property."""
 
@@ -100,7 +100,7 @@ class Int8Property(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class Int16Property(Property):
     """Signed 16-bit integer property."""
 
@@ -137,7 +137,7 @@ class Int16Property(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class IntProperty(Property):
     """Signed 32-bit integer property (most common integer type)."""
 
@@ -174,7 +174,7 @@ class IntProperty(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class Int64Property(Property):
     """Signed 64-bit integer property."""
 
@@ -211,7 +211,7 @@ class Int64Property(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class UInt16Property(Property):
     """Unsigned 16-bit integer property."""
 
@@ -248,7 +248,7 @@ class UInt16Property(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class UInt32Property(Property):
     """Unsigned 32-bit integer property."""
 
@@ -285,7 +285,7 @@ class UInt32Property(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class UInt64Property(Property):
     """Unsigned 64-bit integer property."""
 
@@ -322,7 +322,7 @@ class UInt64Property(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class FloatProperty(Property):
     """32-bit floating point property."""
 
@@ -359,7 +359,7 @@ class FloatProperty(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class DoubleProperty(Property):
     """64-bit floating point property."""
 
@@ -401,7 +401,7 @@ class DoubleProperty(Property):
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class BoolProperty(Property):
     """
     Boolean property.
@@ -471,7 +471,7 @@ class BoolProperty(Property):
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class StrProperty(Property):
     """String property (length-prefixed string)."""
 
@@ -508,7 +508,7 @@ class StrProperty(Property):
         return cls(name=header.name, index=index, _value=value)
 
 
-@dataclass
+@dataclass(slots=True)
 class NameProperty(Property):
     """
     Name property (UE4 FName).
@@ -573,7 +573,7 @@ class NameProperty(Property):
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class ObjectProperty(Property):
     """
     Object reference property.
@@ -725,7 +725,7 @@ class ObjectProperty(Property):
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class SoftObjectProperty(Property):
     """
     Soft object reference property.

@@ -19,7 +19,7 @@ if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
 
 
-@dataclass
+@dataclass(slots=True)
 class ByteProperty(Property):
     """
     Byte property - can be either a raw byte or an enum value.

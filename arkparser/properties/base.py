@@ -23,7 +23,7 @@ if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
 
 
-@dataclass
+@dataclass(slots=True)
 class Property(ABC):
     """
     Base class for all ARK properties.
@@ -82,7 +82,7 @@ class Property(ABC):
         raise NotImplementedError(f"{cls.__name__} must implement read()")
 
 
-@dataclass
+@dataclass(slots=True)
 class PropertyHeader:
     """
     Property header data read before the value.
