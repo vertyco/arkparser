@@ -32,6 +32,7 @@ Performance:
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 import logging
 import math
@@ -1366,13 +1367,21 @@ def export_tamed(save: t.Any, map_config: MapConfig | None = None) -> list[dict[
     (b) every cryopod-embedded tame, with the latter carrying ``cryo=True``
     and inheriting the cryopod item's world location for GPS fields.
     """
+    return list(_iter_tamed(save, map_config))
+
+
+def _iter_tamed(save: t.Any, map_config: MapConfig | None) -> t.Iterator[dict[str, t.Any]]:
+    """Yield ASV_Tamed records one at a time (see :func:`export_tamed`).
+
+    Generator form so :func:`export_to_files` can stream each record to disk
+    and release it instead of materializing the whole list (the list is the
+    dominant export-time allocation on large PvE saves).
+    """
     objects = _world_objects(save, "get_tamed_creatures", "tamed_objects")
     lookup = _save_lookup(save)
-    results: list[dict[str, t.Any]] = [
-        _tamed_dict(obj, _status_for(obj, lookup), lookup, map_config, save) for obj in objects
-    ]
-    results.extend(_export_world_cryopods(save, map_config))
-    return results
+    for obj in objects:
+        yield _tamed_dict(obj, _status_for(obj, lookup), lookup, map_config, save)
+    yield from _export_world_cryopods(save, map_config)
 
 
 def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.Any, dict[str, t.Any]]:
@@ -1820,10 +1829,16 @@ def _wild_dict(
 
 
 def export_wild(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
+    return list(_iter_wild(save, map_config))
+
+
+def _iter_wild(save: t.Any, map_config: MapConfig | None) -> t.Iterator[dict[str, t.Any]]:
+    """Yield ASV_Wild records one at a time (streaming form of export_wild)."""
     objects = _world_objects(save, "get_wild_creatures", "wild_objects")
     is_asa = bool(getattr(save, "is_asa", False))
     lookup = _save_lookup(save)
-    return [_wild_dict(obj, _status_for(obj, lookup), map_config, is_asa) for obj in objects]
+    for obj in objects:
+        yield _wild_dict(obj, _status_for(obj, lookup), map_config, is_asa)
 
 
 def _player_from_profile(
@@ -2073,6 +2088,15 @@ def export_players(
     map_config: MapConfig | None = None,
     cluster_inventories: t.Iterable[CloudInventory] | None = None,
 ) -> list[dict[str, t.Any]]:
+    return list(_iter_players(save, map_config, cluster_inventories))
+
+
+def _iter_players(
+    save: t.Any,
+    map_config: MapConfig | None,
+    cluster_inventories: t.Iterable[CloudInventory] | None,
+) -> t.Iterator[dict[str, t.Any]]:
+    """Yield ASV_Players records one at a time (streaming form of export_players)."""
     profiles = _collection(save, "profiles", Profile)
     lookup = _save_lookup(save)
     pawn_status_by_id = _player_status_by_data_id(save, lookup)
@@ -2083,7 +2107,6 @@ def export_players(
     allocation = _assemble_tribes(save)
     profile_tribeid = allocation["profile_tribeid"]
     tribe_names = allocation["names"]
-    results: list[dict[str, t.Any]] = []
     for entry in profiles:
         record, join_keys = _player_record_for(entry, save, pawn_status_by_id, lookup, map_config)
         if record is None:
@@ -2100,11 +2123,10 @@ def export_players(
                 inv_list = []
                 record["inventory"] = inv_list
             inv_list.extend(spliced)
-        results.append(record)
+        yield record
     # Tribe members with no .arkprofile surface as stub players (legacy +N).
     for tid, pid, name in allocation["member_stubs"]:
-        results.append(_member_stub_player(tid, pid, name, tribe_names.get(tid, "")))
-    return results
+        yield _member_stub_player(tid, pid, name, tribe_names.get(tid, ""))
 
 
 def _strip_rich_color(msg: str) -> str:
@@ -2761,20 +2783,23 @@ def _structure_dict(
 
 
 def export_structures(save: t.Any, map_config: MapConfig | None = None) -> list[dict[str, t.Any]]:
+    return list(_iter_structures(save, map_config))
+
+
+def _iter_structures(save: t.Any, map_config: MapConfig | None) -> t.Iterator[dict[str, t.Any]]:
+    """Yield ASV_Structures records one at a time (streaming form of export_structures)."""
     objects = _world_objects(save, "get_structures", "structure_objects")
     lookup = _save_lookup(save)
     # Reuse the assembled tribe-name map so a structure's ``tribe`` resolves to
     # the same name the tribes export uses (file TribeName / stub OwnerName).
     tribe_names = _assemble_tribes(save)["names"]
-    results: list[dict[str, t.Any]] = []
     for obj in objects:
         team = _int(_prop(obj, "TargetingTeam"))
         if team < _PLAYER_TEAM_THRESHOLD and _is_excluded_abandoned(getattr(obj, "class_name", "") or ""):
             # Unowned map element / crate / debug actor: legacy drops these
             # from ASV_Structures (surfaced via ASV_MapStructures instead).
             continue
-        results.append(_structure_dict(obj, save, lookup, map_config, tribe_names))
-    return results
+        yield _structure_dict(obj, save, lookup, map_config, tribe_names)
 
 
 # Mirrors C# ContentContainer.cs:846. Order matters: first match wins.
@@ -2810,10 +2835,14 @@ def export_map_structures(
     save: t.Any,
     map_config: MapConfig | None = None,
 ) -> list[dict[str, t.Any]]:
+    return list(_iter_map_structures(save, map_config))
+
+
+def _iter_map_structures(save: t.Any, map_config: MapConfig | None) -> t.Iterator[dict[str, t.Any]]:
+    """Yield ASV_MapStructures records one at a time (streaming form of export_map_structures)."""
     objects = getattr(save, "objects", None) or []
-    all_objs = list(objects.values()) if isinstance(objects, dict) else list(objects)
+    all_objs = objects.values() if isinstance(objects, dict) else objects
     lookup = _save_lookup(save)
-    results: list[dict[str, t.Any]] = []
     for obj in all_objs:
         cn = getattr(obj, "class_name", "") or ""
         label = _asv_map_struct_label(cn)
@@ -2829,8 +2858,7 @@ def export_map_structures(
             "inventory": _inventory_items(obj, lookup),
         }
         data.update(_gps_payload(obj, map_config))
-        results.append(data)
-    return results
+        yield data
 
 
 # Legacy ASVExport.exe filenames. Single canonical schema.
@@ -2845,12 +2873,8 @@ _EXPORT_NAMES: dict[str, str] = {
 }
 
 
-def _wrap_with_meta(
-    data: list[dict[str, t.Any]],
-    save: t.Any,
-    map_config: MapConfig | None = None,
-) -> dict[str, t.Any]:
-    """Wrap a payload in legacy ``{map, day, time, data}`` envelope."""
+def _meta_head(save: t.Any, map_config: MapConfig | None = None) -> dict[str, t.Any]:
+    """Return the legacy envelope head ``{map, day, time}`` (no ``data`` key)."""
     map_name = getattr(map_config, "name", "") if map_config is not None else ""
     day = 0
     time_str = "00:00"
@@ -2859,7 +2883,74 @@ def _wrap_with_meta(
         day = int(game_time // 86400)
         rem = int(game_time % 86400)
         time_str = f"{rem // 3600:02d}:{(rem % 3600) // 60:02d}"
-    return {"map": map_name, "day": day, "time": time_str, "data": data}
+    return {"map": map_name, "day": day, "time": time_str}
+
+
+def _wrap_with_meta(
+    data: list[dict[str, t.Any]],
+    save: t.Any,
+    map_config: MapConfig | None = None,
+) -> dict[str, t.Any]:
+    """Wrap a payload in the legacy ``{map, day, time, data}`` envelope.
+
+    Retained for callers that already hold a materialized list (e.g. the
+    validation harness diffing against legacy). :func:`export_to_files`
+    streams via :func:`_stream_dump` instead and does not use this.
+    """
+    return {**_meta_head(save, map_config), "data": data}
+
+
+def _stream_dump(
+    fh: t.TextIO,
+    head: dict[str, t.Any] | None,
+    records: t.Iterable[dict[str, t.Any]],
+    dump_kwargs: dict[str, t.Any],
+) -> None:
+    """Stream a JSON array to ``fh``, one record at a time.
+
+    Writes a bare ``[records...]`` array when ``head`` is ``None``, otherwise
+    splices the records into ``head`` under a ``"data"`` key
+    (``{..head.., "data": [records...]}``). Each record is encoded and written
+    individually, then released — the full record list never co-resides in
+    memory. The result round-trips identically (at the value level) to
+    ``json.dump(head | {"data": list(records)}, fh, **dump_kwargs)``; only
+    insignificant whitespace differs.
+
+    Pre-conditions: ``records`` is a finite iterable of JSON-serializable
+    dicts; ``dump_kwargs`` carries the same ``indent`` / ``separators`` /
+    ``default`` used elsewhere. Post-conditions: ``fh`` holds one complete,
+    valid JSON document.
+    """
+    indent = dump_kwargs.get("indent")
+    rec_kwargs: dict[str, t.Any] = {"default": dump_kwargs.get("default", str)}
+    if indent:
+        rec_kwargs["indent"] = indent
+    else:
+        rec_kwargs["separators"] = (",", ":")
+    nl = "\n" if indent else ""
+    if head is not None:
+        head_json = json.dumps(head, **rec_kwargs)
+        assert head_json.endswith("}"), "envelope head must serialize to a JSON object"
+        # Splice the data array in just before the head object's closing brace
+        # (indented dumps leave a trailing "\n}", compact a bare "}").
+        fh.write(head_json[: -2 if indent else -1])
+        fh.write(f',{nl}{" " * indent}"data": [' if indent else ',"data":[')
+        rec_pad = " " * (indent * 2) if indent else ""
+        close_pad = " " * indent if indent else ""
+    else:
+        fh.write("[")
+        rec_pad = " " * indent if indent else ""
+        close_pad = ""
+    first = True
+    for rec in records:
+        chunk = json.dumps(rec, **rec_kwargs)
+        if indent:
+            chunk = rec_pad + chunk.replace("\n", "\n" + rec_pad)
+        fh.write(("" if first else ",") + nl + chunk)
+        first = False
+    fh.write("]" if first else nl + close_pad + "]")
+    if head is not None:
+        fh.write(nl + "}")
 
 
 def _load_cluster_inventories(
@@ -2909,18 +3000,33 @@ def export_all(
     Note: returns flat lists per type (not the legacy ``{map, day, time, data}``
     envelope). ``export_to_files`` adds the envelope when writing.
     """
+    return {name: list(records) for name, records in _iter_exports(save, map_config, cluster)}
+
+
+def _iter_exports(
+    save: t.Any,
+    map_config: MapConfig | None,
+    cluster: str | Path | t.Iterable[CloudInventory] | None,
+) -> t.Iterator[tuple[str, t.Iterable[dict[str, t.Any]]]]:
+    """Yield ``(ASV_name, record_iterable)`` one export type at a time.
+
+    The heavy types (tamed / wild / players / structures / map_structures)
+    yield **lazy generators** so :func:`export_to_files` can stream each
+    record to disk and release it — the full per-type list never
+    materializes (it is the dominant export-time allocation on large PvE
+    saves). The small types (tribes / tribe_logs) stay eager lists.
+    :func:`export_all` wraps each iterable in ``list()`` for callers that
+    want every record in memory.
+    """
     cluster_invs = _load_cluster_inventories(cluster)
     cluster_tamed = export_cluster_uploads(cluster_invs, map_config) if cluster_invs else []
-    tamed = export_tamed(save, map_config) + cluster_tamed
-    return {
-        _EXPORT_NAMES["tamed"]: tamed,
-        _EXPORT_NAMES["wild"]: export_wild(save, map_config),
-        _EXPORT_NAMES["players"]: export_players(save, map_config, cluster_invs or None),
-        _EXPORT_NAMES["tribes"]: export_tribes(save),
-        _EXPORT_NAMES["structures"]: export_structures(save, map_config),
-        _EXPORT_NAMES["tribe_logs"]: export_tribe_logs(save),
-        _EXPORT_NAMES["map_structures"]: export_map_structures(save, map_config),
-    }
+    yield _EXPORT_NAMES["tamed"], itertools.chain(_iter_tamed(save, map_config), cluster_tamed)
+    yield _EXPORT_NAMES["wild"], _iter_wild(save, map_config)
+    yield _EXPORT_NAMES["players"], _iter_players(save, map_config, cluster_invs or None)
+    yield _EXPORT_NAMES["tribes"], export_tribes(save)
+    yield _EXPORT_NAMES["structures"], _iter_structures(save, map_config)
+    yield _EXPORT_NAMES["tribe_logs"], export_tribe_logs(save)
+    yield _EXPORT_NAMES["map_structures"], _iter_map_structures(save, map_config)
 
 
 def export_to_files(
@@ -2952,9 +3058,15 @@ def export_to_files(
         dump_kwargs: dict[str, t.Any] = {"separators": (",", ":"), "default": str}
     else:
         dump_kwargs = {"indent": 2, "default": str}
-    for name, data in export_all(save, map_config, cluster=cluster).items():
-        payload: t.Any = _wrap_with_meta(data, save, map_config) if wrap else data
+    # Stream each export type record-by-record straight to its file: a record
+    # is built, encoded, written, then released. The full per-type list never
+    # materializes and no whole-file JSON string is built — both were the
+    # measured peak-RAM drivers on large PvE saves (the structures list alone
+    # was hundreds of MB of nested inventory dicts).
+    head = _meta_head(save, map_config) if wrap else None
+    for name, records in _iter_exports(save, map_config, cluster):
         path = out / f"{name}.json"
-        path.write_text(json.dumps(payload, **dump_kwargs), encoding="utf-8")
+        with path.open("w", encoding="utf-8") as fh:
+            _stream_dump(fh, head, records, dump_kwargs)
         created.append(path)
     return created

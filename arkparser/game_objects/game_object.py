@@ -64,23 +64,34 @@ class GameObject:
     parent: GameObject | None = field(default=None, repr=False)
     components: dict[str, GameObject] = field(default_factory=dict, repr=False)
 
-    # Lazy property index: name -> {index: Property}. Built on first lookup,
-    # invalidated by setting to None when properties is mutated.
-    _prop_index: dict[str, dict[int, "Property"]] | None = field(default=None, repr=False, compare=False)
+    # Lazy property index: name -> Property (single-index, the common case) OR
+    # name -> {index: Property} (only when a name carries >1 distinct index).
+    # Storing the bare Property for single-index names avoids allocating one
+    # inner dict per (object, name): on a 300k-object save that was ~5.4M dicts
+    # / ~600 MB of pure index overhead built during export. Built on first
+    # lookup, invalidated by setting to None when properties is mutated.
+    _prop_index: dict[str, "Property | dict[int, Property]"] | None = field(
+        default=None, repr=False, compare=False
+    )
 
-    def _build_prop_index(self) -> dict[str, dict[int, "Property"]]:
-        idx: dict[str, dict[int, "Property"]] = {}
+    def _build_prop_index(self) -> dict[str, "Property | dict[int, Property]"]:
+        # First-writer wins, matching legacy C# GetPropertyValue
+        # (IPropertyContainer.cs:45) which returns the first (name, index)
+        # match. _serialize_properties keeps all occurrences in the additive
+        # `properties` dict; lookups intentionally mirror legacy here. Do not
+        # switch to last-wins.
+        idx: dict[str, "Property | dict[int, Property]"] = {}
         for prop in self.properties:
-            bucket = idx.get(prop.name)
-            if bucket is None:
-                idx[prop.name] = {prop.index: prop}
-            else:
-                # First-writer wins, matching legacy C# GetPropertyValue
-                # (IPropertyContainer.cs:45) which returns the first (name,
-                # index) match. _serialize_properties keeps all occurrences in
-                # the additive `properties` dict; lookups intentionally mirror
-                # legacy here. Do not switch to last-wins.
-                bucket.setdefault(prop.index, prop)
+            existing = idx.get(prop.name)
+            if existing is None:
+                idx[prop.name] = prop  # common case: store the bare Property
+            elif isinstance(existing, dict):
+                existing.setdefault(prop.index, prop)
+            elif existing.index != prop.index:
+                # Second distinct index for this name: promote to a dict.
+                # `existing` first preserves first-writer iteration order.
+                idx[prop.name] = {existing.index: existing, prop.index: prop}
+            # else: duplicate (name, index) -> keep first-writer `existing`.
         self._prop_index = idx
         return idx
 
@@ -108,11 +119,16 @@ class GameObject:
         """Get a property by name and optional index (None = first by insertion)."""
         idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
         bucket = idx.get(name)
-        if not bucket:
+        if bucket is None:
             return None
-        if index is None:
-            return next(iter(bucket.values()))
-        return bucket.get(index)
+        if isinstance(bucket, dict):
+            if index is None:
+                return next(iter(bucket.values()))
+            return bucket.get(index)
+        # Single-index bucket: the bare Property.
+        if index is None or bucket.index == index:
+            return bucket
+        return None
 
     def get_property_value(self, name: str, default: t.Any = None, index: int | None = None) -> t.Any:
         """Get a property value by name (returns default if missing)."""
@@ -123,7 +139,11 @@ class GameObject:
         """Get all properties with the given name (any index)."""
         idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
         bucket = idx.get(name)
-        return list(bucket.values()) if bucket else []
+        if bucket is None:
+            return []
+        if isinstance(bucket, dict):
+            return list(bucket.values())
+        return [bucket]
 
     def has_property(self, name: str) -> bool:
         """Check if this object has a property with the given name."""
