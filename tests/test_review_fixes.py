@@ -238,11 +238,15 @@ def test_uploaded_creature_nan_experience_zeroed() -> None:
 
 # --- code-review (max): ASE byte-array enum-name discriminator (C1) ----------
 
-def test_byte_array_raw_uint8_path_unchanged() -> None:
-    # data_size == count+4 -> raw uint8 (common case; must not regress).
+def test_byte_array_raw_uint8_path_bytes() -> None:
+    # data_size == count+4 -> raw uint8 array. Since 0.5.2 the raw path returns
+    # a single bytes blob (lighter than list[int]); the no-drift invariant
+    # (reader fully consumed) is what this guards.
     reader = BinaryReader.from_bytes(b"\x0a\x14\x1e")
     vals = _read_array_elements(reader, "ByteProperty", 3, 3 + 4, "Foo", False, None)
-    assert vals == [10, 20, 30]
+    assert vals == bytes([10, 20, 30])
+    assert isinstance(vals, bytes)
+    assert reader.remaining == 0
 
 
 def test_byte_array_enum_name_path_no_drift() -> None:

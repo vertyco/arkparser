@@ -46,7 +46,7 @@ if t.TYPE_CHECKING:
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class ArrayProperty(Property):
     """
     Array property - contains a list of values of the same type.
@@ -66,14 +66,14 @@ class ArrayProperty(Property):
     name: str
     index: int = 0
     array_type: str = ""
-    _values: list[t.Any] = field(default_factory=list)
+    _values: list[t.Any] | bytes = field(default_factory=list)
 
     @property
     def type_name(self) -> str:
         return "ArrayProperty"
 
     @property
-    def value(self) -> list[t.Any]:
+    def value(self) -> list[t.Any] | bytes:
         return self._values
 
     @property
@@ -378,7 +378,7 @@ def _read_array_elements(
     array_name: str,
     is_asa: bool,
     name_table: list[str] | None = None,
-) -> list[t.Any]:
+) -> list[t.Any] | bytes:
     """
     Read array elements based on the array type.
 
@@ -393,7 +393,7 @@ def _read_array_elements(
         is_asa: True for ASA format.
         name_table: Optional name table for world saves (version 6+).
     """
-    values: list[t.Any] = []
+    values: list[t.Any] | bytes = []
 
     # Simple numeric types
     if array_type == "IntProperty":
@@ -427,8 +427,9 @@ def _read_array_elements(
             for _ in range(count):
                 values.append(read_name(reader, name_table))
         else:
-            for _ in range(count):
-                values.append(reader.read_uint8())
+            # Raw byte array -> one bytes blob (8x lighter than list[int];
+            # consumers accept bytes; never reaches JSON output).
+            values = reader.read_bytes(count)
     elif array_type == "FloatProperty":
         for _ in range(count):
             values.append(reader.read_float())
@@ -599,7 +600,7 @@ def _read_worldsave_array_elements(
     element_type: str,
     count: int,
     name_table: dict[int, str],
-) -> list[t.Any]:
+) -> list[t.Any] | bytes:
     """
     Read array elements for ASA WorldSave format.
 
@@ -616,7 +617,7 @@ def _read_worldsave_array_elements(
     Returns:
         List of element values.
     """
-    values: list[t.Any] = []
+    values: list[t.Any] | bytes = []
 
     # Simple numeric types - same as other formats
     if element_type == "IntProperty":
@@ -641,8 +642,8 @@ def _read_worldsave_array_elements(
         for _ in range(count):
             values.append(reader.read_int8())
     elif element_type == "ByteProperty":
-        for _ in range(count):
-            values.append(reader.read_uint8())
+        # Raw byte array -> one bytes blob (see ASE branch).
+        values = reader.read_bytes(count)
     elif element_type == "FloatProperty":
         for _ in range(count):
             values.append(reader.read_float())
@@ -792,7 +793,7 @@ def _read_worldsave_struct_array_elements(
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class StructProperty(Property):
     """
     Struct property - contains structured data.
@@ -1064,7 +1065,7 @@ class StructProperty(Property):
 # =============================================================================
 
 
-@dataclass
+@dataclass(slots=True)
 class MapProperty(Property):
     """
     Map property - contains key-value pairs.
