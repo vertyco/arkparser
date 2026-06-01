@@ -54,4 +54,10 @@ def normalize_indexed_list(value: t.Any) -> list[t.Any]:
         return []
     if isinstance(normalized, list):
         return normalized
+    # A raw ByteProperty array is stored as `bytes` for memory efficiency
+    # (8x lighter than list[int]); expose it element-wise as a list of ints so
+    # consumers that iterate it (e.g. tribe MembersRankGroups -> int(rank))
+    # see the same shape they did before byte arrays were stored as bytes.
+    if isinstance(normalized, (bytes, bytearray)):
+        return list(normalized)
     return [normalized]
