@@ -15,6 +15,7 @@ import pytest
 
 from arkparser.common.binary_reader import BinaryReader
 from arkparser.common.exceptions import CorruptDataError, EndOfDataError
+from arkparser.common.normalization import normalize_indexed_list
 from arkparser.data_models import UploadedCreature, UploadedItem
 from arkparser.export import (
     _SyntheticGameObject,
@@ -247,6 +248,16 @@ def test_byte_array_raw_uint8_path_bytes() -> None:
     assert vals == bytes([10, 20, 30])
     assert isinstance(vals, bytes)
     assert reader.remaining == 0
+
+
+def test_normalize_indexed_list_expands_bytes_to_ints() -> None:
+    # Regression: once raw ByteProperty arrays became `bytes` (0.5.2), element
+    # consumers that iterate them (tribe MembersRankGroups -> int(rank)) blew up
+    # because normalize_indexed_list wrapped the blob as [b'...'] instead of
+    # exposing its ints. A bytes value must normalize to a list of ints.
+    assert normalize_indexed_list(bytes([0, 2, 5])) == [0, 2, 5]
+    assert normalize_indexed_list(b"") == []
+    assert [int(r) for r in normalize_indexed_list(b"\x00")] == [0]
 
 
 def test_byte_array_enum_name_path_no_drift() -> None:
