@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import typing as t
 from dataclasses import dataclass, field
 
@@ -17,6 +18,26 @@ from .common.normalization import normalize_indexed_data, normalize_indexed_list
 from .properties.registry import read_properties
 
 logger = logging.getLogger(__name__)
+
+# Trailing UE actor spawn-instance suffix on cryopod class names, e.g.
+# "Raptor_Character_BP_C_2145673735". ARK stores the full instance name in the
+# cryopod CustomDataStrings/SoftClasses blob; the worldsave name-table path
+# discards this instance int32, so non-cryo tames never carry it. Strip it to
+# match the canonical class name ("Raptor_Character_BP_C") and legacy parity.
+_INSTANCE_SUFFIX_RE = re.compile(r"_\d+$")
+
+
+def _strip_instance_suffix(class_name: str) -> str:
+    """Drop a trailing ``_<digits>`` actor-instance suffix from a class name.
+
+    Pre: ``class_name`` is a str. Post: returns the same string with at most one
+    trailing ``_<digits>`` group removed. Legit variant suffixes (``_Aberrant_C``,
+    ``_Fire_C``) end in a letter, so they are never touched.
+    """
+    assert isinstance(class_name, str), "class_name must be str"
+    stripped = _INSTANCE_SUFFIX_RE.sub("", class_name)
+    assert len(stripped) <= len(class_name), "strip must not grow the string"
+    return stripped
 
 
 def _finite(value: t.Any, default: float) -> float:
@@ -514,7 +535,7 @@ class CryopodCreature:
             # Parse strings - need at least 3 for basic info
             strings = normalize_indexed_list(custom_data.get("CustomDataStrings"))
             if len(strings) >= 3:
-                cryo.class_name = strings[0]  # e.g., "Raptor_Character_BP_C_2145673735"
+                cryo.class_name = _strip_instance_suffix(strings[0])  # raw: "Raptor_Character_BP_C_2145673735"
                 display_name = strings[1]  # e.g., "bluey - Lvl 228 (Raptor)"
                 colors_str = strings[2]  # e.g., "2,2,2,2,2,2,"
 
@@ -602,7 +623,9 @@ class CryopodCreature:
             if soft_classes:
                 first_class = soft_classes[0]
                 if isinstance(first_class, dict):
-                    cryo.class_name = first_class.get("name", cryo.class_name)
+                    cryo.class_name = _strip_instance_suffix(
+                        first_class.get("name", cryo.class_name)
+                    )
 
             # Populate raw creature_props / status_props so the export
             # pipeline's _SyntheticGameObject adapter (which calls
