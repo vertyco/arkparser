@@ -45,7 +45,7 @@ def _asa_blob(current: list[float], max_: list[float]) -> dict[str, object]:
 
 def test_asa_cryopod_eleven_current_stats_does_not_leak_max_into_craft() -> None:
     """ASA cryopod blob: current[0..10] then max[0..10]. craft must come
-    from current[11] — which does not exist, so it must stay 0.0, NOT pick
+    from current[11], which does not exist, so it must stay 0.0, NOT pick
     up max[0]."""
     current = [6206.46, 2411.2, 0.0, 750.0, 13153.03, 100.0, 0.0, 63.6, 6.69, 0.09, 0.0]
     max_ = [6206.46, 2411.2, 0.0, 750.0, 13153.03, 100.0, 0.0, 63.6, 6.69, 0.09, 0.0]

@@ -52,7 +52,7 @@ def test_gps_payload_is_strict_json_safe() -> None:
     # _gps_payload only reads ``obj.location``; a namespace stand-in is enough.
     obj = types.SimpleNamespace(location=loc)
     payload = _gps_payload(obj, None)
-    # No NaN/Infinity tokens survive — strict parsers (JS, Pydantic) reject them.
+    # No NaN/Infinity tokens survive; strict parsers (JS, Pydantic) reject them.
     text = json.dumps(payload)
     assert "Infinity" not in text and "NaN" not in text
     json.loads(text, parse_constant=lambda tok: pytest.fail(f"non-finite: {tok}"))

@@ -299,7 +299,7 @@ def _read_worldsave_property_header(
         raise ValueError("WorldSave format requires a name table")
 
     # Some ASA blobs (header-only objects like AnimSequence) carry no
-    # property block — exit cleanly instead of trying to read past EOF.
+    # property block; exit cleanly instead of trying to read past EOF.
     if reader.remaining < 8:
         return None
 

@@ -425,7 +425,7 @@ def _gps_payload(
     loc = getattr(obj, "location", None)
     if loc is None:
         return {"ccc": "0 0 0", "lat": 0.0, "lon": 0.0}
-    # _float coerces non-finite (inf/nan) coords to 0.0 — those are invalid
+    # _float coerces non-finite (inf/nan) coords to 0.0; those are invalid
     # JSON tokens that crash strict downstream parsers.
     x = _float(getattr(loc, "x", 0.0))
     y = _float(getattr(loc, "y", 0.0))
@@ -476,7 +476,7 @@ def _approx_real_datetime(
         return mtime + dt.timedelta(seconds=offset)
     except (TypeError, ValueError, OverflowError, OSError):
         # Mirror legacy GetApproxDateTimeOf's try/catch: a garbage/huge in-game
-        # time overflows datetime arithmetic — legacy returns null, so do we.
+        # time overflows datetime arithmetic; legacy returns null, so do we.
         return None
 
 
@@ -624,9 +624,9 @@ def _pin_code(obj: t.Any) -> int:
 
     ARK serializes PINs in two forms; only one is ever populated:
 
-    - ``CurrentPinCode`` (singular) — a scalar carrying the actual code.
+    - ``CurrentPinCode`` (singular): a scalar carrying the actual code.
       This is where every observed non-zero PIN lives on real saves.
-    - ``CurrentPinCodes`` (plural) — an ``ArrayProperty`` of ints. In
+    - ``CurrentPinCodes`` (plural): an ``ArrayProperty`` of ints. In
       practice this is always zero-filled across every reference dump
       (ASE + Primitive+); historical PINs from earlier ARK versions are
       not persisted. The plural form is checked as a fallback only.
@@ -1532,7 +1532,7 @@ def _cryo_tamed_record(
     """
     actor, status = _cryo_props_to_synthetic(cryo)
     # Cluster-UPLOADED creatures are not cryo/vivarium in legacy terms (their
-    # IsInCryo is false), so legacy keeps their id positive — do NOT negate.
+    # IsInCryo is false), so legacy keeps their id positive, so do NOT negate.
     # Only genuine in-world cryopod/vivarium creatures negate, via
     # _export_world_cryopods passing stored=True directly to _tamed_dict.
     record = _tamed_dict(actor, status, empty_lookup, map_config)
@@ -1988,7 +1988,7 @@ def _cluster_items_by_xuid(
     Each cluster file is named after the owning player's Steam id (ASE) or
     platform UUID (ASA). That same stem names the player's ``.arkprofile``,
     so :func:`export_players` joins on the profile's source filename stem
-    (see there) — a stable key on both platforms without cracking any
+    (see there), a stable key on both platforms without cracking any
     in-file ownership data. (``Profile.unique_id`` equals the stem only on
     ASE; on ASA it is the numeric net id, not the UUID filename.)
     """
@@ -2911,7 +2911,7 @@ def _stream_dump(
     Writes a bare ``[records...]`` array when ``head`` is ``None``, otherwise
     splices the records into ``head`` under a ``"data"`` key
     (``{..head.., "data": [records...]}``). Each record is encoded and written
-    individually, then released — the full record list never co-resides in
+    individually, then released; the full record list never co-resides in
     memory. The result round-trips identically (at the value level) to
     ``json.dump(head | {"data": list(records)}, fh, **dump_kwargs)``; only
     insignificant whitespace differs.
@@ -2975,7 +2975,7 @@ def _load_cluster_inventories(
             try:
                 loaded.append(CloudInventory.load(entry))
             except (OSError, ArkParseError) as e:
-                # Skip unreadable/corrupt cluster files but record which one —
+                # Skip unreadable/corrupt cluster files but record which one:
                 # a silent drop hides every upload in that file and looks like
                 # the player simply has no uploads. Unexpected errors propagate.
                 logger.warning("Skipping cluster file %s: %s", entry, e)
@@ -3012,7 +3012,7 @@ def _iter_exports(
 
     The heavy types (tamed / wild / players / structures / map_structures)
     yield **lazy generators** so :func:`export_to_files` can stream each
-    record to disk and release it — the full per-type list never
+    record to disk and release it; the full per-type list never
     materializes (it is the dominant export-time allocation on large PvE
     saves). The small types (tribes / tribe_logs) stay eager lists.
     :func:`export_all` wraps each iterable in ``list()`` for callers that
@@ -3060,7 +3060,7 @@ def export_to_files(
         dump_kwargs = {"indent": 2, "default": str}
     # Stream each export type record-by-record straight to its file: a record
     # is built, encoded, written, then released. The full per-type list never
-    # materializes and no whole-file JSON string is built — both were the
+    # materializes and no whole-file JSON string is built; both were the
     # measured peak-RAM drivers on large PvE saves (the structures list alone
     # was hundreds of MB of nested inventory dicts).
     head = _meta_head(save, map_config) if wrap else None
