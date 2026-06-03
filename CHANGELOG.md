@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project uses semantic
-versioning on its **public Python API** (the output JSON schema is additive —
+versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
 ## [0.5.0]
@@ -10,7 +10,7 @@ legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 Major legacy-parity pass driven by a full-codebase review and validated against
 `ASVExport.exe` on every ASE map (plus parser-only ASA validation on all 7 ASA
 maps). The public Python API is unchanged; legacy keys are unchanged. **Several
-exports now emit more records / different field values to match legacy** — see
+exports now emit more records / different field values to match legacy**, see
 "Behavioral changes" before upgrading a downstream consumer.
 
 ### Added / Fixed (legacy parity)
@@ -19,7 +19,7 @@ exports now emit more records / different field values to match legacy** — see
   the full legacy tribe superset (mirroring `ContentContainer`): two sentinels
   (`[ASV Unclaimed]` `2000000000`, `[ASV Abandoned]` `-2147483648`), the loaded
   `.arktribe` files, a solo `Tribe of <name>` per profile, and stub tribes for
-  every distinct structure (`TargetingTeam >= 50000`) and in-world tame team —
+  every distinct structure (`TargetingTeam >= 50000`) and in-world tame team,
   deduped by id. Previously only file-backed tribes were emitted (theisland
   306 → 1936 matched of legacy's 2180; primitive_plus 570 → **6012/6012 exact**).
 - **Player synthesis + tribe resolution.** Tribe members with no `.arkprofile`
@@ -42,7 +42,7 @@ exports now emit more records / different field values to match legacy** — see
 
 ### Added (API)
 
-- `Profile.raw_tribe_id` — the explicit stored tribe id (no `player_id`
+- `Profile.raw_tribe_id`, the explicit stored tribe id (no `player_id`
   fallback), used by the player→tribe allocation.
 
 ### Robustness / internals
@@ -61,7 +61,7 @@ exports now emit more records / different field values to match legacy** — see
 ### Behavioral changes (read before upgrading a consumer)
 
 - **`ASV_Tribes` / `ASV_TribeLogs` record counts increase substantially** (≈3–10×
-  on busy maps) — mostly stub tribes (`tribeid` + name, `players: 0`). Consumers
+  on busy maps), mostly stub tribes (`tribeid` + name, `players: 0`). Consumers
   that ingest these (e.g. ArkViewer → SQLite) will see many more rows.
 - **Abandoned structures now report `tribeid = -2147483648`** (was `0`). A filter
   testing `tribeid == 0` for "no tribe" must be updated.

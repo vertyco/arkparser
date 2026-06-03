@@ -184,7 +184,7 @@ The legacy ASVExport.exe emitted only the visible 8 stats (`hp`, `stam`, `melee`
 | `isClone` | legacy | `bIsClone` or `bIsCloneDino` |
 | `tamedServer` | legacy | `TamedOnServerName` |
 | `uploadedServer` | legacy | `UploadedFromServerName` |
-| `maturation` | legacy | `str(int(BabyAge * 100))` — integer maturation percent (a baby with no `BabyAge` is `0`, a newborn). Note: legacy emits the full float string (e.g. `"7.5131035"`); arkparser truncates to the integer percent. Semantically equal and the downstream consumer coerces to `int` either way. |
+| `maturation` | legacy | `str(int(BabyAge * 100))`, integer maturation percent (a baby with no `BabyAge` is `0`, a newborn). Note: legacy emits the full float string (e.g. `"7.5131035"`); arkparser truncates to the integer percent. Semantically equal and the downstream consumer coerces to `int` either way. |
 | `traits` | legacy | `CreatureTraits` as a list of `{"trait": <class>}` objects (matches `ASVExport`'s shape, not a flat string list) |
 | `inventory` | legacy | items from `MyInventoryComponent.InventoryItems`. Each entry carries `itemId`, `qty`, `blueprint`, plus a full snake_case property dump flattened in at the top level (`id`, `rating`, `durability`, `quality`, `damage`, `armor`, `durability_max`, `hypo`, `hyper`, `clip_size`, `weight`, `crafter`, `crafter_tribe`, `skill_bonus`, `loaded_ammo`, `spoils_at`, `spoiled_at`, `c0`..`c5`, `egg_*`, etc). `item_stat_values` is unpacked into the universal 8-slot ARK map (slot 0 `gen_quality`, 1 `armor`, 2 `durability_max`, 3 `damage`, 4 `clip_size`, 5 `hypo`, 6 `weight`, 7 `hyperthermal_insulation`); raw uint16s scaled by the per-blueprint multiplier (which lives in the UE blueprint, not the save). Default / unset values are filtered (no `craft_queue=0`, `skin=-1`, `color_pre_skin=[0]*6`, NaN spoil timers, etc). When the item is a **cryopod / soultrap / vivarium / dinoball** with an embedded creature, the entry is enriched with `dino_id` (combined 64-bit id matching the corresponding `ASV_Tamed` record), `dino_creature` (species / class name), and `dino_name` (`TamedName` if set). Cryopods stored in containers (cryofridges, vaults, dedicated storage) get the same enrichment. |
 | `father_id`, `mother_id` | added | combined dino id from the first `DinoAncestors` entry (`null` when missing) |
@@ -288,13 +288,13 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 
 #### `ASV_Tribes` schema
 
-`ASV_Tribes` (and `ASV_TribeLogs` / `ASV_Players`, which iterate the same list) is a **superset** of the loaded `.arktribe` files, mirroring legacy `ContentContainer`: it seeds two sentinels (`[ASV Unclaimed]` id `2000000000`, `[ASV Abandoned]` id `-2147483648`), adds every file-backed tribe, then synthesizes a stub tribe for each player profile not already in a tribe (`Tribe of <name>`, id = `PlayerDataID`), each distinct structure `TargetingTeam` (`>= 50000`), and each distinct in-world tame `TargetingTeam` — deduped by id. Cross-server tribes that exist **only** in cluster cloud-inventory files (no map presence) are not synthesized.
+`ASV_Tribes` (and `ASV_TribeLogs` / `ASV_Players`, which iterate the same list) is a **superset** of the loaded `.arktribe` files, mirroring legacy `ContentContainer`: it seeds two sentinels (`[ASV Unclaimed]` id `2000000000`, `[ASV Abandoned]` id `-2147483648`), adds every file-backed tribe, then synthesizes a stub tribe for each player profile not already in a tribe (`Tribe of <name>`, id = `PlayerDataID`), each distinct structure `TargetingTeam` (`>= 50000`), and each distinct in-world tame `TargetingTeam`, deduped by id. Cross-server tribes that exist **only** in cluster cloud-inventory files (no map presence) are not synthesized.
 
 | Field | Origin | Source / formula |
 |---|---|---|
 | `tribeid` | legacy | `TribeID` / parser `Tribe.tribe_id`, or a synthesized stub/sentinel id (see above) |
 | `tribe` | legacy | tribe name (file `TribeName`; for stubs, `OwnerName`/`TamerString`; or `Tribe of <character>` for a solo) |
-| `players` | legacy | count of players **allocated** to this tribe (profiles whose explicit team / membership / solo id resolves here, plus member back-fill), matching legacy `Players.Count` — not the raw `.arktribe` member count |
+| `players` | legacy | count of players **allocated** to this tribe (profiles whose explicit team / membership / solo id resolves here, plus member back-fill), matching legacy `Players.Count`, not the raw `.arktribe` member count |
 | `members` | legacy | list of `{ign, lvl, playerid, playername, steamid}` built from the allocated players. `lvl` and `steamid` populate from the matching `.arkprofile`; members with no profile (back-filled from the tribe's member list) carry `lvl=0`, `steamid=""`. |
 | `tames`, `structures` | legacy | counts derived from `WorldSave` (creatures + structures whose `TargetingTeam` matches) |
 | `uploadedTames` | legacy | reserved (currently `0`) |
@@ -319,7 +319,7 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `id` | added | `GameObject.id`, internal numeric identifier. Cross-references the values in other records' `linked_structures` / `saddle_structures` / `attached_dino_id` lists. |
 | `tribeid` | legacy | `TargetingTeam` for player-owned structures (`>= 50000`). Unowned structures fall to the synthetic `[ASV Abandoned]` tribe id `-2147483648` (legacy `int.MinValue`), mirroring `ContentContainer.cs`. |
 | `tribe` | legacy | resolved owning-tribe name: the loaded `.arktribe` `TribeName`, else the structure's `OwnerName` / `TamerString`; `"[ASV Abandoned]"` for unowned. (Legacy emits the resolved tribe name, not the raw `OwnerName`.) |
-| `struct` | legacy | `GameObject.class_name`. Unowned map elements / crates / debug actors (`Button_*`, `*Vein_*`, `*Nest_*`, `*Beaver*`, `BeeHive_C`, `ArtifactCrate_*`, `TributeTerminal_*`, `SupplyCrate_*`) are excluded — surfaced via `ASV_MapStructures` instead, matching legacy's abandoned-structure filter. |
+| `struct` | legacy | `GameObject.class_name`. Unowned map elements / crates / debug actors (`Button_*`, `*Vein_*`, `*Nest_*`, `*Beaver*`, `BeeHive_C`, `ArtifactCrate_*`, `TributeTerminal_*`, `SupplyCrate_*`) are excluded; surfaced via `ASV_MapStructures` instead, matching legacy's abandoned-structure filter. |
 | `name` | legacy | `BoxName` (empty when it matches the class name, mirroring legacy's no-rename strip) |
 | `locked` | legacy | `bIsPinLocked` or `bIsLocked` |
 | `created` | legacy (richer) | ISO 8601 datetime with the local TZ of the parser machine, computed `save.file_mtime + (OriginalCreationTime - game_time)` (mirrors legacy `ContentContainer.GetApproxDateTimeOf`). `null` when the anchors are missing. |
@@ -378,7 +378,7 @@ data = export_all(save, map_config, cluster="path/to/cluster")
 #                       .arkprofile filename stem.
 ```
 
-Cluster items are spliced into the owning player's `inventory`; no separate `ASV_ClusterItems` file is emitted. The match works because every cluster file and the player's `.arkprofile` share a stem — the Steam id on ASE, the hex platform UUID on ASA — so the join is keyed on the profile's source filename stem. (`Profile.unique_id` equals that stem only on ASE; on ASA it is the numeric net id, not the UUID filename, so loading profiles from real file paths — which sets `Profile.source_path` — is required for the ASA splice.)
+Cluster items are spliced into the owning player's `inventory`; no separate `ASV_ClusterItems` file is emitted. The match works because every cluster file and the player's `.arkprofile` share a stem (the Steam id on ASE, the hex platform UUID on ASA) so the join is keyed on the profile's source filename stem. (`Profile.unique_id` equals that stem only on ASE; on ASA it is the numeric net id, not the UUID filename, so loading profiles from real file paths (which sets `Profile.source_path`) is required for the ASA splice.)
 
 Pre-loaded `CloudInventory` instances also work (`cluster=[inv1, inv2, ...]`).
 

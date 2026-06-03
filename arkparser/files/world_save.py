@@ -660,7 +660,7 @@ class WorldSave:
             save._read_asa_header(conn)
             # Actor locations are positional enrichment, not load-critical. A
             # malformed/padded ActorTransforms blob must not abort the whole
-            # save — record it and continue with object data only. (EndOfDataError
+            # save; record it and continue with object data only. (EndOfDataError
             # subclasses ArkParseError, so this catches both.)
             try:
                 save._read_asa_actor_locations(conn)

@@ -587,7 +587,7 @@ def _read_array_elements(
     else:
         # Unknown element type: element sizes are indeterminate, so reading on
         # would desync the stream and corrupt every later property in this
-        # object. Raise instead of emitting a placeholder — callers parse each
+        # object. Raise instead of emitting a placeholder; callers parse each
         # object in isolation (per-blob in ASA, per-offset in ASE) and record
         # the failure, so the damage stays contained to this one object.
         raise UnknownPropertyError(f"ArrayProperty element type {array_type!r}")

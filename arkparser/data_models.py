@@ -519,7 +519,7 @@ class CryopodCreature:
           - ASE has 7 strings, ASA has 10+ strings (with species at index 9)
         - CustomDataFloats: ASE = [current x 12, max x 12, +1] (25); ASA = [current
           x 11 (no CraftingSkill), max x 11, extras] (36). See the per-format
-          branch below — the layouts genuinely differ in current-stat width.
+          branch below; the layouts genuinely differ in current-stat width.
         - CustomDataNames: Color names for the 6 color regions
 
         Args:
@@ -632,7 +632,7 @@ class CryopodCreature:
             # ``get_property_value``) sees the fields it expects. ARK
             # cryopod CustomItemDatas blobs only carry a small subset of
             # the original creature properties (no DinoID, no TribeID, no
-            # tamer string, etc.) — surface what we have, leave the rest
+            # tamer string, etc.); surface what we have, leave the rest
             # absent so consumers can detect the gap.
             _stat_to_idx = {
                 "Health": 0, "Stamina": 1, "Torpidity": 2, "Oxygen": 3,
