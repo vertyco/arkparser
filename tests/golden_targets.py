@@ -101,12 +101,17 @@ def load_tribes(map_dir: Path) -> list[t.Any]:
     return out
 
 
-def load_target(ark_path: Path) -> tuple[t.Any, t.Any, int]:
-    """Load a save target → ``(wrapped_save, map_config, object_count)``."""
+def load_target(ark_path: Path, lazy: bool = False) -> tuple[t.Any, t.Any, int]:
+    """Load a save target → ``(wrapped_save, map_config, object_count)``.
+
+    ``lazy=True`` loads ASE saves with deferred property parsing
+    (``lazy_properties``) so the golden suite can prove the lazy+evict export
+    path produces content-identical output to the eager oracle.
+    """
     from arkparser import WorldSave, get_map_config
 
     assert ark_path.exists(), f"save not found: {ark_path}"
-    save = WorldSave.load(ark_path)
+    save = WorldSave.load(ark_path, lazy_properties=lazy)
     profiles = load_profiles(ark_path.parent)
     tribes = load_tribes(ark_path.parent)
     try:

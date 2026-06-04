@@ -25,19 +25,20 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import sqlite3
+import sys
 import typing as t
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
-from ..common.binary_reader import BinaryReader
+from ..common.binary_reader import BinaryReader, guid_str_le
 from ..common.exceptions import ArkParseError, CorruptDataError
 from ..common.normalization import normalize_indexed_data, normalize_indexed_list
 from ..data_models import CryopodCreature
 from ..game_objects.container import GameObjectContainer
 from ..game_objects.game_object import MAX_OBJECT_COUNT, GameObject
 from ..game_objects.location import LocationData
-from ..properties.registry import read_properties
+from ..properties.registry import read_properties, read_properties_partial
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,11 @@ _ZERO_GUID = b"\x00" * 16
 # A count above this means the read is misaligned (a garbage int32 length),
 # so we fail loudly instead of looping over ~billions of phantom entries.
 _MAX_ASA_NAME_TABLE = 1_000_000
+
+# Evictions between working-set trims on lazy saves. At ~1KB of property
+# bytes per object this bounds the resident mmap-page window to a few
+# hundred MB; saves smaller than one interval never trim (zero overhead).
+_TRIM_INTERVAL_OBJECTS = 200_000
 
 
 def _checked_count(reader: BinaryReader, label: str, maximum: int = MAX_OBJECT_COUNT) -> int:
@@ -190,6 +196,66 @@ class WorldSave:
     _properties_block_offset: int = field(default=0, repr=False)
     _hibernation_offset: int = field(default=0, repr=False)
 
+    # Retained ASE reader for lazy property loading. Set only when the save is
+    # loaded with ``lazy_properties=True``; ``None`` on the default eager path.
+    # Holds the file byte buffer open so :meth:`materialize_object` can seek to
+    # any object's ``properties_offset`` and parse it on demand. The foundation
+    # for the chunked single-pass export (see docs streaming-refactor design).
+    _lazy_reader: BinaryReader | None = field(default=None, repr=False)
+
+    # Retained ASA SQLite connection, the ASA counterpart of ``_lazy_reader``.
+    # Set only when an ASA save is loaded with ``lazy_properties=True``;
+    # :meth:`materialize_object` re-fetches an object's row blob by GUID and
+    # parses its property block on demand, so blobs never accumulate on the
+    # Python heap (SQLite's page cache bounds the resident file window).
+    _lazy_conn: sqlite3.Connection | None = field(default=None, repr=False)
+
+    # Raw 16-byte ``game`` row keys indexed by object id, captured during the
+    # lazy ASA header pass. Saves a UUID string parse per materialization
+    # (hundreds of thousands per export). Empty on eager and ASE paths.
+    _asa_row_keys: list[bytes] = field(default_factory=list, repr=False)
+
+    # Reused cursor for materialization fetches (cursor creation is ~20% of a
+    # single-row SELECT's cost at this call volume).
+    _lazy_cursor: sqlite3.Cursor | None = field(default=None, repr=False)
+
+    # Eviction ring: every materialize_object() appends here so walk drivers
+    # can release everything touched since the last drain with one
+    # evict_materialized() call, without per-site bookkeeping. Empty on the
+    # eager path. Eviction is always correctness-safe: a later access simply
+    # re-materializes (idempotent), so drains may be sprinkled liberally.
+    _lazy_materialized: list[GameObject] = field(default_factory=list, repr=False)
+
+    # Objects evicted since the last working-set trim. Long lazy exports touch
+    # every mmap page in the retained reader; without periodic trims those
+    # clean file-backed pages pile up in the working set until peak RSS is
+    # heap + whole file size. Counted here so small saves (under one trim
+    # interval) never pay for a trim at all.
+    _evicted_since_trim: int = field(default=0, repr=False)
+
+    # Memoized creature list shared by the tamed/wild filters. Creature
+    # classification walks (and on lazy saves, re-parses) the whole object
+    # graph; without this cache get_tamed_creatures and get_wild_creatures
+    # each ran that walk independently.
+    _creatures_cache: list[GameObject] | None = field(default=None, repr=False)
+
+    # Memoized (tamed, wild) split, partitioned from the TargetingTeam values
+    # the fused classification pass captured (container._classified_teams).
+    _creature_split_cache: tuple[list[GameObject], list[GameObject]] | None = field(
+        default=None, repr=False
+    )
+
+    # Per-pod display summary (dino_id, creature, name) keyed by cryopod item
+    # object id. Decoding a pod blob (zlib + full property parse) is one of
+    # the most expensive operations in an export, and each pod is otherwise
+    # decoded twice: once for its ASV_Tamed record and again when the
+    # inventory holding it (cryofridge, pawn, vault) lists its contents.
+    # The tamed pass populates this; inventory listings read it. ~150 bytes
+    # per pod vs several KB for a retained full decode.
+    _cryo_summaries: dict[int, tuple[int, str, str] | None] = field(
+        default_factory=dict, repr=False
+    )
+
     # Valid ASE save versions
     VALID_ASE_VERSIONS: t.ClassVar[tuple[int, ...]] = (5, 6, 7, 8, 9, 10, 11, 12)
 
@@ -201,6 +267,7 @@ class WorldSave:
         source: str | Path | bytes,
         load_properties: bool = True,
         max_objects: int | None = None,
+        lazy_properties: bool = False,
     ) -> WorldSave:
         """
         Load a world save from path or bytes.
@@ -211,6 +278,12 @@ class WorldSave:
             source: File path (``str`` or ``Path``) or raw ``bytes``.
             load_properties: Whether to parse per-object properties.
             max_objects: Maximum number of objects to load (ASA only, useful for testing).
+            lazy_properties: When ``True``, skip the eager per-object property
+                pass; properties load on demand via :meth:`materialize_object`
+                (and free via :meth:`GameObject.evict_properties`). ASE retains
+                the file reader and seeks per object; ASA retains the SQLite
+                connection and re-fetches each object's row blob by GUID.
+                Default ``False`` keeps the eager behaviour.
 
         Returns:
             A fully-parsed :class:`WorldSave` instance.
@@ -225,7 +298,7 @@ class WorldSave:
             if source.startswith(SQLITE_MAGIC):
                 raise ArkParseError("ASA world saves from raw bytes are not supported. Pass a file path instead.")
             reader = BinaryReader.from_bytes(source)
-            return cls._parse_ase(reader, load_properties)
+            return cls._parse_ase(reader, load_properties, lazy_properties)
 
         path = Path(source)
         if not path.exists():
@@ -239,10 +312,16 @@ class WorldSave:
         mtime = dt.datetime.fromtimestamp(path.stat().st_mtime, tz=local_tz)
 
         if header.startswith(SQLITE_MAGIC):
-            save = cls._parse_asa(path, load_properties, max_objects)
+            save = cls._parse_asa(path, load_properties, max_objects, lazy_properties)
         else:
-            reader = BinaryReader.from_file(path)
-            save = cls._parse_ase(reader, load_properties)
+            if lazy_properties:
+                # The lazy reader stays alive for the whole export; an mmap
+                # buffer keeps the file contents out of the Python heap and
+                # lets the OS reclaim pages under pressure.
+                reader = BinaryReader.from_file_mmap(path)
+            else:
+                reader = BinaryReader.from_file(path)
+            save = cls._parse_ase(reader, load_properties, lazy_properties)
         save.file_mtime = mtime
         return save
 
@@ -265,40 +344,57 @@ class WorldSave:
     # TargetingTeam threshold: the C# reference (TeamType.cs) uses 50_000 as the
     # boundary between non-player (wild/AI) and player-owned teams.
     _PLAYER_TEAM_THRESHOLD: t.ClassVar[int] = 50_000
-    def _is_tamed_creature(self, obj: GameObject) -> bool:
-        """Return ``True`` if a creature is player-owned.
-
-        Matches legacy ``GameObjectExtensions.IsTamed`` exactly: a creature is
-        tamed iff its ``TargetingTeam`` is a player team (``>= 50_000``; the
-        breeding sentinel ``2_000_000_000`` falls above the threshold). Teams
-        ``< 50_000`` are wild / AI.
-
-        Cryopod-embedded tames are NOT actors in the world-object graph -- they
-        are decoded separately via :meth:`iter_cryopod_creatures` -- so this
-        only classifies in-world actor creatures. An earlier marker-property
-        fallback (treat any creature carrying ``TamingTeamID``/``TamerString``/
-        etc. as tamed) was removed: it mis-classified wild creatures carrying a
-        leftover ``TamingTeamID`` as tames (14 false positives on TheIsland,
-        all with no ``TamedName``) while catching 0 real tames on a busy
-        server, diverging from the legacy pure-team rule.
-        """
-        assert obj is not None, "creature object required"
-        targeting_team = obj.get_property_value("TargetingTeam")
-        if not isinstance(targeting_team, (int, float)):
-            return False
-        return int(targeting_team) >= self._PLAYER_TEAM_THRESHOLD
-
     def get_creatures(self) -> list[GameObject]:
         """Return all creature objects (tamed **and** wild)."""
         return self.container.get_creatures()
 
     def get_tamed_creatures(self) -> list[GameObject]:
         """Return tamed creatures."""
-        return [obj for obj in self.get_creatures() if self._is_tamed_creature(obj)]
+        return self._split_creatures()[0]
 
     def get_wild_creatures(self) -> list[GameObject]:
         """Return wild creatures."""
-        return [obj for obj in self.get_creatures() if not self._is_tamed_creature(obj)]
+        return self._split_creatures()[1]
+
+    def _split_creatures(self) -> tuple[list[GameObject], list[GameObject]]:
+        """Classify creatures into ``(tamed, wild)`` in one materializing pass.
+
+        Tame rule matches legacy ``GameObjectExtensions.IsTamed`` exactly: a
+        creature is tamed iff ``TargetingTeam`` is a player team (``>= 50_000``;
+        the breeding sentinel ``2_000_000_000`` falls above the threshold).
+        Teams ``< 50_000`` (or a missing/non-numeric team) are wild / AI. Do not
+        add marker-property fallbacks (``TamingTeamID`` / ``TamerString``): that
+        mis-classified 14 wild creatures on TheIsland while catching 0 real
+        tames. Cryopod-embedded tames are not world actors; they surface via
+        :meth:`iter_cryopod_creatures`.
+
+        Pre: ``self.objects`` parsed (headers at minimum). Post: split cached.
+        The partition is pure dict lookups against the ``TargetingTeam`` values
+        the fused classification pass captured (``container._classified_teams``)
+        while each property block was resident, so it parses nothing; previously
+        the tamed and wild filters each re-ran (and on lazy saves re-parsed) a
+        full creature walk.
+        """
+        if self._creature_split_cache is not None:
+            return self._creature_split_cache
+        if self._creatures_cache is None:
+            self._creatures_cache = self.get_creatures()
+        # The fused classification pass (container._classify_world) captured
+        # every creature's TargetingTeam while its property block was resident,
+        # so this partition is pure dict lookups: no parsing, no draining. A
+        # creature absent from the map had a missing/non-numeric team -> wild.
+        teams = self.container._classified_teams
+        tamed: list[GameObject] = []
+        wild: list[GameObject] = []
+        for obj in self._creatures_cache:
+            team = teams.get(obj.id)
+            if team is not None and team >= self._PLAYER_TEAM_THRESHOLD:
+                tamed.append(obj)
+            else:
+                wild.append(obj)
+        assert len(tamed) + len(wild) == len(self._creatures_cache), "split lost creatures"
+        self._creature_split_cache = (tamed, wild)
+        return self._creature_split_cache
 
     def get_structures(self) -> list[GameObject]:
         """Return tribe-owned placed structures."""
@@ -467,7 +563,12 @@ class WorldSave:
     # ==================================================================
 
     @classmethod
-    def _parse_ase(cls, reader: BinaryReader, load_properties: bool = True) -> WorldSave:
+    def _parse_ase(
+        cls,
+        reader: BinaryReader,
+        load_properties: bool = True,
+        lazy_properties: bool = False,
+    ) -> WorldSave:
         """
         Parse an ASE binary world save.
 
@@ -494,13 +595,205 @@ class WorldSave:
         save._read_ase_data_files_object_map(reader)
         save._read_ase_objects(reader)
 
-        if load_properties:
+        if lazy_properties:
+            # Defer property parsing: retain the reader so each object loads on
+            # demand via materialize_object and frees via evict_properties.
+            # Wiring _lazy_source makes property access auto-materialize via
+            # GameObject._ensure_loaded, so every existing reader of these
+            # objects (classifiers, record builders, resolvers) works unchanged.
+            save._lazy_reader = reader
+            for obj in save.objects:
+                obj._lazy_source = save
+        elif load_properties:
             save._read_ase_object_properties(reader)
 
         save.container = GameObjectContainer(objects=save.objects)
+        # build_relationships reads only header names (not properties), so it is
+        # safe under lazy loading and does not force materialization.
         save.container.build_relationships()
 
         return save
+
+    def materialize_object(
+        self, obj: GameObject, names: frozenset[str] | None = None
+    ) -> None:
+        """Lazy-load one object's properties (ASE reader seek / ASA row fetch).
+
+        Pre: the save was loaded with ``lazy_properties=True``, so
+        ``_lazy_reader`` (ASE) or ``_lazy_conn`` (ASA) is set and ``obj`` is
+        one of ``self.objects``. Post: ``obj.properties`` is populated
+        (idempotent: re-parses if called again, which is harmless and used by
+        callers that evicted in between).
+
+        ``names`` is a perf hint for ASA v14+ saves: decode only those
+        property names and skip the rest (a verified byte-exact skip walk),
+        leaving ``obj.properties`` holding just the requested subset. Callers
+        must evict before anything else reads the object. Ignored on ASE and
+        v13 (full parse, still correct).
+        """
+        if self.is_asa:
+            self._materialize_asa_object(obj, names)
+            self._lazy_materialized.append(obj)
+            return
+        assert self._lazy_reader is not None, "materialize_object requires lazy_properties=True"
+        idx = obj.id
+        next_obj = self.objects[idx + 1] if 0 <= idx and idx + 1 < len(self.objects) else None
+        name_table = self.name_table if self.version > 5 and isinstance(self.name_table, list) else None
+        try:
+            obj.load_properties(
+                self._lazy_reader,
+                properties_block_offset=self._properties_block_offset,
+                is_asa=False,
+                next_object=next_obj,
+                name_table=name_table,
+            )
+        except Exception as exc:  # noqa: BLE001 - mirror the eager pass
+            # The eager pass (_read_ase_object_properties) swallows per-object
+            # parse failures, records them, and keeps the partial properties.
+            # Lazy materialization must behave identically or a corrupt object
+            # would crash lazy exports that eager exports survive.
+            # load_properties marks the object loaded before raising, so this
+            # does not retry (and re-log) on every subsequent access.
+            err = f"{obj.class_name or obj.id}: {exc}"
+            if err not in self._parse_errors:
+                self._parse_errors.append(err)
+        self._lazy_materialized.append(obj)
+
+    def _materialize_asa_object(
+        self, obj: GameObject, names: frozenset[str] | None = None
+    ) -> None:
+        """Lazy-load one ASA object's properties from its SQLite row.
+
+        Pre: the save was loaded with ``lazy_properties=True`` (ASA), so
+        ``_lazy_conn`` is open and ``obj.guid`` is the row key in the ``game``
+        table. Post: ``obj._props_loaded`` is True; ``obj.properties`` holds
+        the parsed block, or stays empty on a parse failure (mirroring the
+        eager pass, which records the error and keeps the object). With
+        ``names`` set (v14+ only), the block is partially decoded via the
+        verified skip walk; the caller owns evicting before other readers
+        touch the object.
+        """
+        conn = self._lazy_conn
+        assert conn is not None, "materialize_object requires lazy_properties=True"
+        assert obj.guid, "ASA object missing its row GUID"
+        keys = self._asa_row_keys
+        key = keys[obj.id] if 0 <= obj.id < len(keys) else UUID(obj.guid).bytes_le
+        cursor = self._lazy_cursor
+        if cursor is None:
+            cursor = conn.cursor()
+            self._lazy_cursor = cursor
+        row = cursor.execute("SELECT value FROM game WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            # Mark loaded so a vanished row cannot retry on every access.
+            obj._props_loaded = True
+            err = f"Properties for {obj.class_name} ({obj.guid}): game row missing"
+            if err not in self._parse_errors:
+                self._parse_errors.append(err)
+            return
+        self._materialize_asa_from_blob(obj, row[0], names)
+
+    def _materialize_asa_from_blob(
+        self, obj: GameObject, blob: bytes, names: frozenset[str] | None
+    ) -> None:
+        """Parse one ASA object's property block from an in-hand row blob.
+
+        Pre: ``blob`` is the object's ``game`` row value; ``obj`` headers are
+        parsed (``properties_offset`` valid). Post: ``obj._props_loaded`` is
+        True; properties hold the full block, the ``names`` subset (v14+), or
+        stay empty on a parse failure (recorded, mirroring the eager pass).
+        """
+        # Mark loaded up front so a corrupt object cannot retry (and re-log)
+        # on every subsequent property access.
+        obj._props_loaded = True
+        reader = BinaryReader(blob, save_version=self.version)
+        reader.position = obj.properties_offset
+        nt = self.name_table
+        assert isinstance(nt, dict), "ASA name table must be a dict"
+        try:
+            if names is not None and self.version >= 14:
+                obj.properties, _skipped = read_properties_partial(reader, nt, names)
+                obj._partial_names = names
+            else:
+                obj.properties = read_properties(
+                    reader,
+                    is_asa=True,
+                    name_table=nt,
+                    worldsave_format=True,
+                )
+                obj._partial_names = None
+            obj._prop_index = None
+        except Exception as e:  # noqa: BLE001 - mirror the eager pass
+            err = f"Properties for {obj.class_name} ({obj.guid}): {e}"
+            if err not in self._parse_errors:
+                self._parse_errors.append(err)
+
+    def stream_materialize(
+        self, objs: list[GameObject], names: frozenset[str] | None = None
+    ) -> t.Iterator[GameObject]:
+        """Materialize ``objs`` (ascending id order), yielding each in turn.
+
+        On lazy ASA saves the row blobs come from ONE ordered table scan
+        instead of one SELECT per object (a classification pass touches most
+        of the table; per-row fetches cost ~12us each at that volume, the
+        scan well under 1us per row). Rows are matched to objects by their
+        stored row key, so load-time parse failures (which shift object ids
+        off row ordinals) cannot misalign the stream. ASE lazy saves fall
+        back to per-object reader seeks, which are already cheap.
+
+        Pre: ``objs`` is an id-ascending subset of ``self.objects`` on a save
+        loaded with ``lazy_properties=True``. Post: every yielded object is
+        materialized (and ring-tracked for eviction); the caller drains.
+        """
+        assert all(a.id < b.id for a, b in zip(objs, objs[1:])), "objs must be id-ascending"
+        if not self.is_asa or self._lazy_conn is None or not self._asa_row_keys:
+            for obj in objs:
+                self.materialize_object(obj, names)
+                yield obj
+            return
+        keys = self._asa_row_keys
+        j = 0
+        n = len(objs)
+        scan = self._lazy_conn.execute("SELECT key, value FROM game")
+        for i, (key, blob) in enumerate(scan):
+            assert i < MAX_OBJECT_COUNT, "game table scan exceeded bound"
+            if j >= n:
+                break
+            obj = objs[j]
+            if key == keys[obj.id]:
+                self._materialize_asa_from_blob(obj, blob, names)
+                self._lazy_materialized.append(obj)
+                j += 1
+                yield obj
+        # Any leftovers (key drift, truncated scan) fall back to point fetches.
+        for k in range(j, n):
+            self.materialize_object(objs[k], names)
+            yield objs[k]
+
+    def evict_materialized(self) -> int:
+        """Evict every object materialized since the last drain.
+
+        Pre: lazy mode (ring only ever fills via materialize_object).
+        Post: ring empty; each drained object's properties released. Returns
+        the number of objects evicted (0 on the eager path). Walk drivers call
+        this once per visited record to keep the resident set bounded.
+        """
+        drained = self._lazy_materialized
+        assert isinstance(drained, list), "eviction ring missing"
+        if not drained:
+            return 0
+        for obj in drained:
+            obj.evict_properties()
+        count = len(drained)
+        drained.clear()
+        assert not self._lazy_materialized, "eviction ring not drained"
+        self._evicted_since_trim += count
+        if self._evicted_since_trim >= _TRIM_INTERVAL_OBJECTS and self._lazy_reader is not None:
+            # Drop clean mmap pages from the working set (~1KB of property
+            # bytes per object means an interval bounds the mapped-page
+            # window to a few hundred MB on the biggest saves).
+            _ = self._lazy_reader.trim_working_set()  # False = bytes-backed, nothing to trim
+            self._evicted_since_trim = 0
+        return count
 
     def _read_ase_header(self, reader: BinaryReader) -> None:
         """Read the ASE binary header (varies by version)."""
@@ -541,7 +834,10 @@ class WorldSave:
         reader.position = self._name_table_offset
 
         count = _checked_count(reader, "ASE name table")
-        self.name_table = [reader.read_string() for _ in range(count)]
+        # Interned entries make the per-header type/name comparisons and the
+        # registry dict lookups pointer-fast (millions per save), and dedupe
+        # the strings against the literals used throughout the parser.
+        self.name_table = [sys.intern(reader.read_string()) for _ in range(count)]
 
         reader.position = saved
 
@@ -648,13 +944,21 @@ class WorldSave:
         path: Path,
         load_properties: bool = True,
         max_objects: int | None = None,
+        lazy_properties: bool = False,
     ) -> WorldSave:
-        """Parse an ASA SQLite world save."""
+        """Parse an ASA SQLite world save.
+
+        ``lazy_properties=True`` parses only object headers from each row blob
+        and retains the connection (``_lazy_conn``) so property blocks load on
+        demand via :meth:`materialize_object`. The connection is kept open for
+        the save's lifetime on success and closed on any load failure.
+        """
         save = cls()
         save.is_asa = True
         save._parse_errors = []
 
         conn = None
+        keep_open = False
         try:
             conn = sqlite3.connect(str(path))
             save._read_asa_header(conn)
@@ -666,11 +970,21 @@ class WorldSave:
                 save._read_asa_actor_locations(conn)
             except ArkParseError as e:
                 save._parse_errors.append(f"ActorTransforms: {e}")
-            save._read_asa_game_objects(conn, load_properties, max_objects)
+            save._read_asa_game_objects(conn, load_properties, max_objects, lazy_properties)
+            if lazy_properties:
+                # Hold one read transaction for the connection's lifetime.
+                # Without it every materialize SELECT opens and closes an
+                # implicit transaction, which on Windows means a file lock
+                # and unlock per fetch (~233us vs ~14us inside a held read
+                # txn, measured). Lock exposure matches the eager path's
+                # full-table streaming scan; this is read-only throughout.
+                conn.execute("BEGIN")
+                save._lazy_conn = conn
+                keep_open = True
         except sqlite3.Error as e:
             raise ArkParseError(f"SQLite error reading ASA world save: {e}")
         finally:
-            if conn is not None:
+            if conn is not None and not keep_open:
                 conn.close()
 
         save.container = GameObjectContainer(objects=save.objects)
@@ -754,7 +1068,8 @@ class WorldSave:
         for _ in range(name_count):
             idx = reader.read_int32()
             raw = reader.read_string()
-            nt[idx] = raw.rsplit(".", 1)[-1] if "." in raw else raw
+            # Interned for the same pointer-fast comparisons as the ASE table.
+            nt[idx] = sys.intern(raw.rsplit(".", 1)[-1] if "." in raw else raw)
             if sentinel and idx == 1:
                 # User-placed-actor sentinel: skip the trailing 4-byte tag.
                 reader.skip(4)
@@ -778,7 +1093,7 @@ class WorldSave:
             if all(b == 0 for b in guid_bytes):
                 break
 
-            guid_str = str(UUID(bytes_le=guid_bytes))
+            guid_str = guid_str_le(guid_bytes)
             x, y, z = reader.read_double(), reader.read_double(), reader.read_double()
             pitch, yaw, roll = reader.read_double(), reader.read_double(), reader.read_double()
             reader.skip(8)
@@ -797,6 +1112,7 @@ class WorldSave:
         conn: sqlite3.Connection,
         load_properties: bool = True,
         max_objects: int | None = None,
+        lazy: bool = False,
     ) -> None:
         """Read all game objects from the ``game`` table."""
         query = "SELECT key, value FROM game"
@@ -808,12 +1124,17 @@ class WorldSave:
         obj_id = 0
 
         for key_bytes, value_bytes in cursor:
-            guid_str = str(UUID(bytes_le=key_bytes))
+            guid_str = guid_str_le(key_bytes)
             try:
-                obj = self._parse_asa_game_object(guid_str, value_bytes, obj_id, load_properties)
+                obj = self._parse_asa_game_object(guid_str, value_bytes, obj_id, load_properties, lazy)
                 if guid_str in self.actor_locations:
                     obj.location = self.actor_locations[guid_str]
                 self.objects.append(obj)
+                if lazy:
+                    # Keep the raw row key so materialization skips the
+                    # guid-string -> bytes round trip (one UUID parse per
+                    # fetch, hundreds of thousands per export).
+                    self._asa_row_keys.append(key_bytes)
                 obj_id += 1
             except Exception as e:
                 self._parse_errors.append(f"GUID {guid_str}: {e}")
@@ -824,8 +1145,16 @@ class WorldSave:
         blob: bytes,
         obj_id: int,
         load_properties: bool = True,
+        lazy: bool = False,
     ) -> GameObject:
-        """Parse a single ASA game object from its binary blob."""
+        """Parse a single ASA game object from its binary blob.
+
+        ``lazy=True`` stops after the header: the blob is dropped and
+        ``_lazy_source`` is wired so the first property access re-fetches the
+        row and parses the block on demand (see :meth:`materialize_object`).
+        Truncated blobs (the early returns below) never had a property block,
+        so they stay eager-empty and are never wired for materialization.
+        """
         reader = BinaryReader(blob, save_version=self.version)
         obj = GameObject(id=obj_id, guid=guid_str)
         nt = self.name_table
@@ -857,6 +1186,12 @@ class WorldSave:
             return obj
         reader.skip(trailer)
         obj.properties_offset = reader.position
+
+        if lazy:
+            # Defer the property block: drop this blob entirely and let the
+            # first property access re-fetch the row via materialize_object.
+            obj._lazy_source = self
+            return obj
 
         if load_properties:
             try:

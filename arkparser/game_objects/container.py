@@ -14,6 +14,24 @@ from .game_object import GameObject
 if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
 
+# Every property name the fused classification walk reads: the
+# _is_creature_object / _is_structure probes plus the _classified_teams and
+# _inv_actor_info scalar captures. Passed to materialize_object as a partial-
+# decode hint on ASA v14+ lazy saves; if a future edit adds a probe, its name
+# MUST be added here or lazy classification silently reads None (the golden
+# suite catches the resulting export drift).
+_CLASSIFY_PROPERTY_NAMES: frozenset[str] = frozenset({
+    "bServerInitializedDino",
+    "IsInCryo",
+    "OwnerName",
+    "bHasResetDecayTime",
+    "TargetingTeam",
+    "DinoID1",
+    "MyInventoryComponent",
+    "TribeName",
+    "TamerString",
+})
+
 
 @dataclass
 class GameObjectContainer:
@@ -50,6 +68,7 @@ class GameObjectContainer:
         self._by_guid.clear()
         self._by_class.clear()
         self._by_name.clear()
+        self._classify_cache = None
 
     def _build_caches(self) -> None:
         """Build lookup caches if empty."""
@@ -151,9 +170,136 @@ class GameObjectContainer:
         is_character = "_Character_" in cn or "DinoCharacter" in cn
         return is_character and "StatusComponent" not in cn and "Inventory" not in cn
 
+    # Memoized (creatures, structures) pair from the fused classification
+    # pass. Both lists previously required their own full-graph walk, and on
+    # lazy saves each walk is a full property re-parse.
+    _classify_cache: tuple[list[GameObject], list[GameObject]] | None = field(
+        default=None, repr=False
+    )
+
+    # Scalars captured while each object is materialized during the fused
+    # classification pass, so later consumers never re-parse property blocks
+    # just to re-read them on lazy saves:
+    # - _classified_teams: obj.id -> TargetingTeam for creatures + structures
+    #   (tamed/wild split, tribe tame/structure counts).
+    # - _inv_actor_info: obj.id -> (MyInventoryComponent ref, TargetingTeam,
+    #   TribeName, OwnerName) for every non-item actor carrying an inventory
+    #   ref (the item-owner lookup used for cryopod tribe backfill).
+    _classified_teams: dict[int, int] = field(default_factory=dict, repr=False)
+    _inv_actor_info: dict[int, tuple[t.Any, t.Any, t.Any, t.Any]] = field(
+        default_factory=dict, repr=False
+    )
+    # obj.id -> (OwnerName, TamerString, TribeName) for every classified
+    # creature/structure, captured while the block is resident so the tribe
+    # synthesis walks (_distinct_team_names) never re-parse property blocks
+    # just to read three strings on lazy saves.
+    _classified_names: dict[int, tuple[t.Any, t.Any, t.Any]] = field(
+        default_factory=dict, repr=False
+    )
+
     def get_creatures(self) -> list[GameObject]:
         """Get all creature objects (tamed and wild)."""
-        return [obj for obj in self.objects if self._is_creature_object(obj)]
+        return self._classify_world()[0]
+
+    def _classify_world(self) -> tuple[list[GameObject], list[GameObject]]:
+        """Classify every object into creatures / structures in ONE pass.
+
+        Pre: ``self.objects`` populated (headers at minimum). Post: result
+        cached; identical to running the old independent ``get_creatures`` and
+        ``get_structures`` walks (a creature never classifies as a structure:
+        vehicles are excluded by ``_is_creature_object`` and accepted by
+        ``_is_structure``, every other creature is rejected by its ``DinoID1``
+        / ``_Character_BP`` checks, so the ``elif`` is exact).
+
+        Classification reads properties, which auto-materializes lazy objects;
+        drain after each object so a lazy save never holds the whole graph just
+        to classify it, and probe each object's property block once instead of
+        once per category walk. Eager objects have no ``_lazy_source`` and skip
+        the drain entirely.
+
+        Structure dedup matches the C# ASVPack reference
+        (ContentContainer.cs:1049): ASE saves include the same actor in main
+        and sub-levels, so duplicates are dropped by ``Names[0]``.
+        """
+        if self._classify_cache is not None:
+            return self._classify_cache
+        creatures: list[GameObject] = []
+        structures: list[GameObject] = []
+        seen_names: set[str] = set()
+        # Pre-filter on header data alone: items and status/inventory
+        # components never classify as creature or structure, so skip them
+        # before any property probe (which on lazy saves would materialize
+        # ~2/3 of the object graph just to classify it). The component
+        # patterns are deliberately tighter than the bare "Inventory" used by
+        # _NON_STRUCTURE_PATTERNS: every real component class is
+        # *StatusComponent* / PrimalInventory* / *InventoryComponent*
+        # (surveyed across ASE+ASA saves), while a bare substring also caught
+        # modded structures like StructureBP_InventoryCars_C that legacy
+        # admits via OwnerName.
+        candidates: list[GameObject] = []
+        for obj in self.objects:
+            cn = obj.class_name
+            if (
+                obj.is_item
+                or "StatusComponent" in cn
+                or "PrimalInventory" in cn
+                or "InventoryComponent" in cn
+            ):
+                continue
+            candidates.append(obj)
+        # Partial materialization: every property this walk (and its scalar
+        # captures below) reads is in _CLASSIFY_PROPERTY_NAMES, so ASA v14+
+        # lazy saves decode just those and skip the rest of each block (a
+        # verified byte-exact skip walk), with the row blobs streamed from
+        # one ordered table scan instead of a SELECT per object. ASE / v13
+        # parse fully per object; the drain below evicts either way, so
+        # nothing downstream ever sees a partial object. Eager saves iterate
+        # the candidates directly.
+        src0 = candidates[0]._lazy_source if candidates else None
+        if src0 is not None:
+            walk: t.Iterable[GameObject] = src0.stream_materialize(
+                candidates, _CLASSIFY_PROPERTY_NAMES
+            )
+        else:
+            walk = candidates
+        for obj in walk:
+            src = obj._lazy_source
+            is_creature = self._is_creature_object(obj)
+            is_structure = False if is_creature else self._is_structure(obj)
+            # Capture the scalars later walks need while the property block is
+            # resident (re-reading them after the drain would re-parse it).
+            if is_creature or is_structure:
+                team = obj.get_property_value("TargetingTeam")
+                if isinstance(team, (int, float)):
+                    self._classified_teams[obj.id] = int(team)
+                self._classified_names[obj.id] = (
+                    obj.get_property_value("OwnerName"),
+                    obj.get_property_value("TamerString"),
+                    obj.get_property_value("TribeName"),
+                )
+            # Pre-filter above already excluded items and status/inventory
+            # components, so every survivor is an inventory-owner candidate.
+            inv_ref = obj.get_property_value("MyInventoryComponent")
+            if inv_ref is not None:
+                self._inv_actor_info[obj.id] = (
+                    inv_ref,
+                    obj.get_property_value("TargetingTeam"),
+                    obj.get_property_value("TribeName"),
+                    obj.get_property_value("OwnerName"),
+                )
+            if src is not None:
+                src.evict_materialized()
+            if is_creature:
+                creatures.append(obj)
+            elif is_structure:
+                name = obj.primary_name
+                if name is not None:
+                    if name in seen_names:
+                        continue
+                    seen_names.add(name)
+                structures.append(obj)
+        self._classify_cache = (creatures, structures)
+        return self._classify_cache
 
     def get_items(self) -> list[GameObject]:
         """Get all item objects."""
@@ -269,25 +415,8 @@ class GameObjectContainer:
         return True
 
     def get_structures(self) -> list[GameObject]:
-        """Get all placed structures.
-
-        ASE saves include the same actor in both the main level and sub-levels,
-        producing duplicate entries with identical Names[0]. Deduplicating by
-        primary_name matches the C# ASVPack reference (ContentContainer.cs:1049):
-            .GroupBy(x => x.Names[0]).Select(s => s.First())
-        """
-        seen_names: set[str] = set()
-        results: list[GameObject] = []
-        for obj in self.objects:
-            if not self._is_structure(obj):
-                continue
-            name = obj.primary_name
-            if name is not None:
-                if name in seen_names:
-                    continue
-                seen_names.add(name)
-            results.append(obj)
-        return results
+        """Get all placed structures (deduped by ``Names[0]``, see _classify_world)."""
+        return self._classify_world()[1]
 
     def get_player_pawns(self) -> list[GameObject]:
         """Get player character objects on the map."""

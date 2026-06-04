@@ -255,10 +255,34 @@ def read_property_header(
             return None
         type_name = _read_name_from_dict_table(reader, name_table)
     else:
-        name = _read_name_from_list_table(reader, name_table)
+        # ASE list-table fast path. The terminator object is just the name
+        # pair, so that is read alone; for a real property the type name-ref
+        # and data_size + index are 16 contiguous bytes read in one unpack.
+        # Name lookups are inlined (not _read_name_from_list_table) because
+        # this is the hottest frame of a world-save parse: millions of
+        # headers per save, ~5 call frames saved per header.
+        nt_len = len(name_table)
+        name_idx, name_inst = reader.read_int32_pair()
+        internal = name_idx - 1
+        if 0 <= internal < nt_len:
+            name = name_table[internal]
+        else:
+            name = f"__INVALID_NAME_INDEX_{name_idx}__"
+        if name_inst > 0:
+            name = f"{name}_{name_inst - 1}"
         if name == "None":
             return None
-        type_name = _read_name_from_list_table(reader, name_table)
+        type_idx, type_inst, data_size, raw = reader.read_int32_x4()
+        internal = type_idx - 1
+        if 0 <= internal < nt_len:
+            type_name = name_table[internal]
+        else:
+            type_name = f"__INVALID_NAME_INDEX_{type_idx}__"
+        if type_inst > 0:
+            type_name = f"{type_name}_{type_inst - 1}"
+        if is_asa:
+            return PropertyHeader(name=name, type_name=type_name, data_size=data_size, index=0, position=raw)
+        return PropertyHeader(name=name, type_name=type_name, data_size=data_size, index=raw, position=0)
 
     # Both ASE and ASA write data_size + an int32 here, but ASA's int32 is a
     # "position" field (per AsaPropertyRegistry.cs), not an array index.
@@ -303,9 +327,9 @@ def _read_worldsave_property_header(
     if reader.remaining < 8:
         return None
 
-    # Read name: ID (4) + Instance (4)
-    name_id = reader.read_int32()
-    name_instance = reader.read_int32()
+    # Read name: ID (4) + Instance (4), fused (hottest ASA frame: one header
+    # per property, millions per save).
+    name_id, name_instance = reader.read_int32_pair()
 
     # Lookup name
     name = name_table.get(name_id, f"__UNKNOWN_NAME_{name_id}__")
@@ -320,10 +344,8 @@ def _read_worldsave_property_header(
     if name == "None":
         return None
 
-    # Read type: ID (4) + Instance (4)
-    # Type instance is almost always 0 (padding), but must be read
-    type_id = reader.read_int32()
-    _type_instance = reader.read_int32()  # Usually 0
+    # Read type: ID (4) + Instance (4, usually 0 padding), fused.
+    type_id, _type_instance = reader.read_int32_pair()
     type_name = name_table.get(type_id, f"__UNKNOWN_TYPE_{type_id}__")
 
     # NOTE: The property-type-specific data (including data_size and terminator)
