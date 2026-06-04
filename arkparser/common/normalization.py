@@ -21,8 +21,17 @@ def normalize_indexed_data(value: t.Any) -> t.Any:
       and collapsed to a single value when only one indexed entry exists.
     - Other dicts are normalized value-by-value while keeping their keys.
     """
+    # Scalars are by far the most common input. Inline the recursion's leaf
+    # case at every call site below (``x if not container else recurse``) so a
+    # scalar element costs one ``isinstance`` instead of a full recursive call;
+    # this function was the hottest frame in the export profile (~2.5M calls).
     if isinstance(value, list):
-        return [normalize_indexed_data(item) for item in value]
+        return [
+            item
+            if not isinstance(item, (list, dict))
+            else normalize_indexed_data(item)
+            for item in value
+        ]
 
     if not isinstance(value, dict):
         return value
@@ -30,7 +39,11 @@ def normalize_indexed_data(value: t.Any) -> t.Any:
     all_int = True
     out: dict[t.Any, t.Any] = {}
     for key, item in value.items():
-        out[key] = normalize_indexed_data(item)
+        out[key] = (
+            item
+            if not isinstance(item, (list, dict))
+            else normalize_indexed_data(item)
+        )
         if all_int and not isinstance(key, int):
             all_int = False
 

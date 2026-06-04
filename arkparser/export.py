@@ -1,4 +1,4 @@
-"""
+﻿"""
 Legacy-parity JSON export for ARK save data.
 
 Produces dicts matching the C# ``ASVExport.exe`` output schema for the seven
@@ -32,6 +32,7 @@ Performance:
 from __future__ import annotations
 
 import datetime as dt
+import functools
 import itertools
 import json
 import logging
@@ -92,6 +93,31 @@ def _decode_inventory_cryopod(item_obj: t.Any) -> CryopodCreature | None:
             if cryo is not None:
                 return cryo
     return None
+
+
+def _cryo_summary(cryo: t.Any) -> tuple[int, str, str] | None:
+    """Distill a decoded cryopod to the (dino_id, creature, name) fields an
+    inventory entry displays. ``None`` for empty/undecodable pods."""
+    if cryo is None:
+        return None
+    props = getattr(cryo, "creature_props", {}) or {}
+    id1 = props.get("DinoID1", props.get("DinoID1_0", 0))
+    id2 = props.get("DinoID2", props.get("DinoID2_0", 0))
+    dino_id = _combine_dino_id(id1, id2) or 0
+    creature = str(getattr(cryo, "species", "") or getattr(cryo, "class_name", "") or "")
+    name = str(props.get("TamedName") or props.get("TamedName_0") or "")
+    return (dino_id, creature, name)
+
+
+def _cryo_summary_cache(save: t.Any) -> dict[int, tuple[int, str, str] | None] | None:
+    """The save's pod-summary cache, or ``None`` for saves without one.
+
+    The tamed pass fully decodes every pod for its ASV_Tamed record and
+    stores the summary here; inventory listings (structures, pawns, map
+    terminals) read it instead of re-decoding the blob.
+    """
+    cache = getattr(save, "_cryo_summaries", None)
+    return cache if isinstance(cache, dict) else None
 
 
 _RICH_COLOR_RE = re.compile(r"<RichColor[^>]*>|</>")
@@ -400,9 +426,9 @@ def _current_stats_dict(status: t.Any) -> dict[str, float] | None:
 def _flat_stats(points: list[int], suffix: str = "") -> dict[str, int]:
     """Emit all 12 stats as a flat dict.
 
-    With ``suffix`` (``"w"`` / ``"t"`` / ``"m"``) emits ``hp-{suffix}`` …
+    With ``suffix`` (``"w"`` / ``"t"`` / ``"m"``) emits ``hp-{suffix}`` â€¦
     ``fort-{suffix}``. Without a suffix emits unsuffixed legacy wild keys
-    (``hp``, ``stam``, …). The legacy ASVExport 8-stat block (hp, stam,
+    (``hp``, ``stam``, â€¦). The legacy ASVExport 8-stat block (hp, stam,
     melee, weight, speed, food, oxy, craft) is emitted first to preserve
     legacy diff order; the four stats legacy never surfaced (torp, water,
     temp, fort) are appended at the end.
@@ -553,7 +579,7 @@ def _traits(obj: t.Any) -> list[str]:
 
 
 def _save_lookup(save: t.Any) -> dict[t.Any, t.Any]:
-    """Return cached id/guid/name → GameObject lookup, building once per save."""
+    """Return cached id/guid/name â†’ GameObject lookup, building once per save."""
     cached = getattr(save, "_export_lookup", None)
     if isinstance(cached, dict):
         return cached
@@ -584,7 +610,7 @@ def _ref_name(ref: t.Any) -> t.Any:
     the key is either a numeric GameObject id (matches ``GameObject.id``)
     or a string name / blueprint path. Numeric ids are returned as ``int``
     so they cross-reference cleanly against the structures export's ``id``
-    field. String keys are returned as ``str``. Empty / ``None`` → ``""``.
+    field. String keys are returned as ``str``. Empty / ``None`` â†’ ``""``.
     """
     if ref is None or ref == "":
         return ""
@@ -692,6 +718,107 @@ def _resolve(ref: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
     return lookup.get(ref)
 
 
+def _drain_lazy(save: t.Any) -> None:
+    """Release every lazily-materialized property block since the last drain.
+
+    No-op for eager saves (and wrapper objects without the method). Called by
+    record iterators and full-graph walks after each visited record so a lazy
+    save's resident property set stays bounded to the current working set:
+    eviction is always correctness-safe because a later access re-materializes.
+    """
+    if (
+        getattr(save, "_lazy_reader", None) is None
+        and getattr(save, "_lazy_conn", None) is None
+    ):
+        return
+    drain = getattr(save, "evict_materialized", None)
+    if callable(drain):
+        _ = drain()  # eviction count is RAM bookkeeping only
+
+
+# Per-record-kind property whitelists for partial decodes on ASA v14+ lazy
+# saves. Collected empirically (references/scripts/collect_names_by_kind
+# .py instruments every getter read during full eager exports) and
+# self-correcting: a getter read outside the set transparently upgrades the
+# object to a full decode (GameObject._ensure_name), so a missing entry costs
+# one extra parse, never output. Keep sorted for diffability.
+_STRUCTURE_RECORD_NAMES: frozenset[str] = frozenset({
+    "AttachedToDinoID1", "AttachedToDinoID2", "BabyCuddleFood", "BabyCuddleType",
+    "BabyNextCuddleTime", "BoxName", "ColorSetIndices", "CreatureTraits",
+    "CurrentItemCount", "CurrentPinCode", "CurrentPinCodes", "CurrentVariant",
+    "DinoAncestors", "DinoDownloadedAtTime", "DinoFeedingListType", "DinoID1",
+    "DinoID2", "FeedingDinoList", "FollowStoppingDistance", "HarvestResourceLevels",
+    "Health", "ImprinterName", "ImprinterPlayerDataID", "ImprinterPlayerUniqueNetId",
+    "IsInCryo", "IsInVivarium", "ItemColorID", "ItemQuantity", "ItemStatValues",
+    "LastActivatedTime", "LastCheckedFuelTime", "LastDeactivatedTime",
+    "LastEnterStasisTime", "LastFireTime", "LastInAllyRangeSerialized",
+    "LastInAllyRangeTime", "LastInAllyRangeTimeSerialized", "LastLongReloadStartTime",
+    "LastUpdatedBabyAgeAtTime", "LastUpdatedGestationAtTime",
+    "LatestUploadedFromServerName", "LinkedPlayerDataID", "LinkedStructures",
+    "MaxHealth", "MaxItemCount", "MyInventoryComponent", "NextAllowedMatingTime",
+    "NumBullets", "OriginalCreationTime", "OriginalNPCVolumeName", "OwnerName",
+    "OwningPlayerID", "OwningPlayerName", "PaintingComponent",
+    "PreviousUploadedFromServerName", "RandomMutationsFemale", "RandomMutationsMale",
+    "RangeSetting", "ResourceCount", "SaddleDino", "SaddleStructures",
+    "SavedDedicatedStorageVersion", "SelectedResourceClass", "StructureColors",
+    "TamedAITargetingRange", "TamedAggressionLevel", "TamedAtTime", "TamedName",
+    "TamedOnServerName", "TamerString", "TamingTeamID", "TargetingTeam", "TribeName",
+    "UniquePaintingId", "UploadedFromServerName", "bAttackTeamMemberDinos",
+    "bContainerActivated", "bEnableTamedMating", "bEnableTamedWandering",
+    "bForceDisablingTaming", "bHasFuel", "bHasResetDecayTime", "bIgnoreAllWhistles",
+    "bIsBaby", "bIsBlueprint", "bIsClone", "bIsCloneDino", "bIsEngram", "bIsFemale",
+    "bIsFlying", "bIsFoundation", "bIsInTurretMode", "bIsLocked", "bIsPinLocked",
+    "bIsPowered", "bNeutered", "bOnlyTargetConscious", "bServerInitializedDino",
+    "bWasPlacementSnapped",
+})
+
+_CREATURE_RECORD_NAMES: frozenset[str] = frozenset({
+    "BabyAge", "BabyCuddleFood", "BabyCuddleType", "BabyNextCuddleTime",
+    "BaseCharacterLevel", "ColorSetIndices", "CreatureTraits", "CurrentStatusValues",
+    "DinoAncestors", "DinoDownloadedAtTime", "DinoID1", "DinoID2",
+    "DinoImprintingQuality", "ExperiencePoints", "ExtraCharacterLevel",
+    "FollowStoppingDistance", "HarvestResourceLevels", "ImprinterName",
+    "ImprinterPlayerDataID", "ImprinterPlayerUniqueNetId", "IsInCryo",
+    "IsInVivarium", "LastEnterStasisTime", "LastInAllyRangeSerialized",
+    "LastInAllyRangeTime", "LastUpdatedBabyAgeAtTime", "LastUpdatedGestationAtTime",
+    "LatestUploadedFromServerName", "MyCharacterStatusComponent",
+    "MyInventoryComponent", "NextAllowedMatingTime", "NumberOfLevelUpPointsApplied",
+    "NumberOfLevelUpPointsAppliedTamed", "NumberOfMutationsAppliedTamed",
+    "OriginalCreationTime", "OriginalNPCVolumeName", "OwnerName", "OwningPlayerID",
+    "OwningPlayerName", "PreviousUploadedFromServerName", "RandomMutationsFemale",
+    "RandomMutationsMale", "SaddleStructures", "TamedAITargetingRange",
+    "TamedAggressionLevel", "TamedAtTime", "TamedName", "TamedOnServerName",
+    "TamerString", "TamingTeamID", "TargetingTeam", "TribeName",
+    "UploadedFromServerName", "bAttackTeamMemberDinos", "bEnableTamedMating",
+    "bEnableTamedWandering", "bForceDisablingTaming", "bIgnoreAllWhistles",
+    "bIsBaby", "bIsClone", "bIsCloneDino", "bIsFemale", "bIsFlying",
+    "bIsInTurretMode", "bNeutered", "bOnlyTargetConscious", "bServerInitializedDino",
+})
+
+_STATUS_RECORD_NAMES: frozenset[str] = frozenset({
+    "BaseCharacterLevel", "CurrentStatusValues", "DinoImprintingQuality",
+    "ExperiencePoints", "ExtraCharacterLevel", "LinkedPlayerDataID",
+    "NumberOfLevelUpPointsApplied", "NumberOfLevelUpPointsAppliedTamed",
+    "NumberOfMutationsAppliedTamed",
+})
+
+_INVENTORY_COMPONENT_NAMES: frozenset[str] = frozenset({
+    "EquippedItems", "InventoryItems",
+})
+
+
+def _materialize_partial(obj: t.Any, names: frozenset[str]) -> None:
+    """Partial-decode hint before a record build (ASA v14+ lazy saves only).
+
+    No-op unless ``obj`` is an unloaded lazy object; ASE and v13 saves parse
+    fully inside materialize_object regardless of the hint. Safe by design:
+    reads outside ``names`` upgrade to the full block transparently.
+    """
+    src = getattr(obj, "_lazy_source", None)
+    if src is not None and not obj._props_loaded:
+        src.materialize_object(obj, names=names)
+
+
 def _world_objects(save: t.Any, getter: str, legacy_attr: str) -> list[t.Any]:
     """Return a category list from save, cached per save instance.
 
@@ -733,23 +860,27 @@ def _collection(source: t.Any, attr: str, kind: type[t.Any]) -> list[t.Any]:
 
 
 def _status_for(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
-    """Find a creature's status component."""
+    """Find a creature's status component (partial-decoded on lazy ASA saves)."""
     comps = getattr(obj, "components", None)
+    status = None
     if isinstance(comps, dict):
         status = comps.get("status")
-        if status is not None:
-            return status
-    return _resolve(_prop(obj, "MyCharacterStatusComponent"), lookup)
+    if status is None:
+        status = _resolve(_prop(obj, "MyCharacterStatusComponent"), lookup)
+    if status is not None:
+        _materialize_partial(status, _STATUS_RECORD_NAMES)
+    return status
 
 
 def _inventory_component(obj: t.Any, lookup: dict[t.Any, t.Any]) -> t.Any:
     inv = _resolve(_prop(obj, "MyInventoryComponent"), lookup)
+    if inv is None:
+        comps = getattr(obj, "components", None)
+        if isinstance(comps, dict):
+            inv = comps.get("inventory")
     if inv is not None:
-        return inv
-    comps = getattr(obj, "components", None)
-    if isinstance(comps, dict):
-        return comps.get("inventory")
-    return None
+        _materialize_partial(inv, _INVENTORY_COMPONENT_NAMES)
+    return inv
 
 
 # Item properties already surfaced at top-level of an inventory entry or
@@ -891,7 +1022,7 @@ def _is_default(key: str, value: t.Any) -> bool:
 
 
 def _flatten_color_array(value: t.Any) -> dict[str, int]:
-    """``color: [c0..c5]`` (or dict[idx → c]) → ``{c0, c1, ..., c5}``.
+    """``color: [c0..c5]`` (or dict[idx â†’ c]) â†’ ``{c0, c1, ..., c5}``.
 
     Mirrors how tame exports surface region colors (``c0`` .. ``c5``).
     Non-zero entries only; all-zero color arrays return ``{}`` so the
@@ -930,8 +1061,8 @@ _ITEM_STAT_SLOT_NAMES: tuple[str, ...] = (
     "hyper",  # hyperthermal insulation
 )
 
-# Snake_case property name → shorter consumer-facing name. Applied after
-# pascal→snake conversion. Anything not in the table keeps its snake_case
+# Snake_case property name â†’ shorter consumer-facing name. Applied after
+# pascalâ†’snake conversion. Anything not in the table keeps its snake_case
 # name so newly-added ASA props still surface automatically.
 _STAT_NAME_ALIASES: dict[str, str] = {
     "item_rating": "rating",
@@ -1033,10 +1164,10 @@ def _expand_stat_slots(raw_slot_values: t.Any) -> dict[str, t.Any]:
 
     Two shapes occur in practice:
 
-    - GameObject inventory path → a sparse ``{index: value}`` dict (see
+    - GameObject inventory path â†’ a sparse ``{index: value}`` dict (see
       :func:`_indexed_property_map`, which preserves the index even for a
       single populated slot).
-    - Cloud / uploaded path → a dense 8-element ``list`` indexed 0..7
+    - Cloud / uploaded path â†’ a dense 8-element ``list`` indexed 0..7
       (``normalize_indexed_data`` collapses the indexed property to a list).
 
     Anything else (a bare scalar from an upstream single-entry collapse that
@@ -1065,8 +1196,13 @@ _PASCAL_SNAKE_RE_1 = re.compile(r"(.)([A-Z][a-z]+)")
 _PASCAL_SNAKE_RE_2 = re.compile(r"([a-z0-9])([A-Z])")
 
 
+@functools.lru_cache(maxsize=4096)
 def _pascal_to_snake(name: str) -> str:
-    """``ItemStatValues`` → ``item_stat_values``, ``bIsBlueprint`` → ``b_is_blueprint``."""
+    """``ItemStatValues`` â†’ ``item_stat_values``, ``bIsBlueprint`` â†’ ``b_is_blueprint``.
+
+    Cached: called once per property per inventory item (millions of calls
+    per big save) over a vocabulary of a few hundred property names.
+    """
     s = _PASCAL_SNAKE_RE_1.sub(r"\1_\2", name)
     return _PASCAL_SNAKE_RE_2.sub(r"\1_\2", s).lower()
 
@@ -1133,7 +1269,11 @@ def _item_stats_dict(item_obj: t.Any, item_class: str = "") -> dict[str, t.Any]:
     return _apply_stat_aliases(pre, item_class=item_class)
 
 
-def _inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t.Any]]:
+def _inventory_items(
+    obj: t.Any,
+    lookup: dict[t.Any, t.Any],
+    cryo_cache: dict[int, tuple[int, str, str] | None] | None = None,
+) -> list[dict[str, t.Any]]:
     inv = _inventory_component(obj, lookup)
     if inv is None:
         return []
@@ -1166,27 +1306,32 @@ def _inventory_items(obj: t.Any, lookup: dict[t.Any, t.Any]) -> list[dict[str, t
             "blueprint": bool(_prop(item_obj, "bIsBlueprint", default=False)),
         }
         if _is_cryopod_class(class_name):
-            cryo = _decode_inventory_cryopod(item_obj)
-            if cryo is not None:
-                props = cryo.creature_props
-                id1 = props.get("DinoID1", props.get("DinoID1_0", 0))
-                id2 = props.get("DinoID2", props.get("DinoID2_0", 0))
-                dino_id = _combine_dino_id(id1, id2)
+            # Pod blobs are expensive to decode (zlib + full property parse).
+            # The tamed pass already decoded every pod it exported and left a
+            # display summary in the save's cache; only decode here on a miss
+            # (pods the tamed pass skipped), and cache that result too.
+            item_id = getattr(item_obj, "id", None)
+            if cryo_cache is not None and item_id in cryo_cache:
+                summary = cryo_cache[item_id]
+            else:
+                summary = _cryo_summary(_decode_inventory_cryopod(item_obj))
+                if cryo_cache is not None and item_id is not None:
+                    cryo_cache[item_id] = summary
+            if summary is not None:
+                dino_id, creature, name = summary
                 if dino_id:
                     entry["dino_id"] = dino_id
-                species_or_class = getattr(cryo, "species", "") or getattr(cryo, "class_name", "")
-                if species_or_class:
-                    entry["dino_creature"] = str(species_or_class)
-                name = props.get("TamedName") or props.get("TamedName_0")
+                if creature:
+                    entry["dino_creature"] = creature
                 if name:
-                    entry["dino_name"] = str(name)
+                    entry["dino_name"] = name
         entry.update(_item_stats_dict(item_obj, class_name))
         items.append(entry)
     return items
 
 
 def _tribe_counts(save: t.Any) -> dict[int, dict[str, int]]:
-    """Build tribe_id → {tames, structures} counts from a WorldSave.
+    """Build tribe_id â†’ {tames, structures} counts from a WorldSave.
 
     Returns an empty dict when ``save`` lacks WorldSave getters (e.g. when
     the caller passed a SimpleNamespace of tribe parsers without world data).
@@ -1197,13 +1342,30 @@ def _tribe_counts(save: t.Any) -> dict[int, dict[str, int]]:
     if not callable(getattr(save, "get_tamed_creatures", None)):
         return {}
     counts: dict[int, dict[str, int]] = {}
-    for obj in save.get_tamed_creatures():
-        tid = _int(_prop(obj, "TargetingTeam"))
+    # Route through _world_objects so the category lists classify once per save
+    # (the direct getters re-ran the full classification walk, which on lazy
+    # saves means a full re-parse of the object graph).
+    # The fused classification pass captured every creature's and structure's
+    # TargetingTeam while its property block was resident
+    # (container._classified_teams); reuse it so these walks parse nothing on
+    # lazy saves. The _prop fallback covers wrapper saves whose objects never
+    # went through that pass.
+    classified_teams = getattr(getattr(save, "container", None), "_classified_teams", None) or {}
+    for obj in _world_objects(save, "get_tamed_creatures", "tamed_objects"):
+        oid = getattr(obj, "id", None)
+        tid = classified_teams.get(oid) if oid is not None else None
+        if tid is None:
+            tid = _int(_prop(obj, "TargetingTeam"))
+            _drain_lazy(save)
         if not tid:
             continue
         counts.setdefault(tid, {"tames": 0, "structures": 0})["tames"] += 1
-    for obj in save.get_structures():
-        tid = _int(_prop(obj, "TargetingTeam"))
+    for obj in _world_objects(save, "get_structures", "structure_objects"):
+        oid = getattr(obj, "id", None)
+        tid = classified_teams.get(oid) if oid is not None else None
+        if tid is None:
+            tid = _int(_prop(obj, "TargetingTeam"))
+            _drain_lazy(save)
         if not tid:
             continue
         counts.setdefault(tid, {"tames": 0, "structures": 0})["structures"] += 1
@@ -1288,7 +1450,7 @@ def _tamed_dict(
         # Legacy emits tamed traits as a list of objects ([{"trait": <class>}]),
         # not a flat string list (ContentPack.cs:723-735). Match that shape.
         "traits": [{"trait": tr} for tr in _traits(obj)],
-        "inventory": _inventory_items(obj, lookup),
+        "inventory": _inventory_items(obj, lookup, _cryo_summary_cache(save)),
         "father_id": father_id,
         "mother_id": mother_id,
         "father_name": father_name,
@@ -1380,12 +1542,14 @@ def _iter_tamed(save: t.Any, map_config: MapConfig | None) -> t.Iterator[dict[st
     objects = _world_objects(save, "get_tamed_creatures", "tamed_objects")
     lookup = _save_lookup(save)
     for obj in objects:
+        _materialize_partial(obj, _CREATURE_RECORD_NAMES)
         yield _tamed_dict(obj, _status_for(obj, lookup), lookup, map_config, save)
+        _drain_lazy(save)
     yield from _export_world_cryopods(save, map_config)
 
 
 def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.Any, dict[str, t.Any]]:
-    """Map inventory-item id → owning container info.
+    """Map inventory-item id â†’ owning container info.
 
     For every object that has an ``InventoryItems`` property (structures,
     player pawns, dino inventory components), walk its contained item refs
@@ -1395,27 +1559,29 @@ def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.
     structure or player inventory we *can* read.
     """
     out: dict[t.Any, dict[str, t.Any]] = {}
-    objects = getattr(save, "objects", None) or []
-    iterable = objects.values() if isinstance(objects, dict) else objects
-    # Walk every actor with a MyInventoryComponent ref (structures, player
-    # pawns, dinos), resolve the inventory, then enumerate its items.
-    # Walking from the actor side gives us TargetingTeam / TribeName /
-    # PlayerName directly, no reverse lookup needed.
-    for actor in iterable:
-        inv_ref = _prop(actor, "MyInventoryComponent")
-        if inv_ref is None:
-            continue
+    # The fused classification pass captured (inv ref, team, tribe, owner) for
+    # every non-item actor carrying MyInventoryComponent while its property
+    # block was resident, so the actor side of this walk needs no parsing at
+    # all; only each inventory component is materialized (to read its
+    # InventoryItems) and drained. Insertion order matches object order, so
+    # first-wins per item id is preserved. The full actor walk below covers
+    # wrapper saves whose objects never went through that pass.
+    container = getattr(save, "container", None)
+    if container is not None and getattr(container, "_classify_cache", None) is not None:
+        actor_infos = container._inv_actor_info.items()
+    else:
+        actor_infos = _iter_inv_actor_info(save)
+    for _actor_id, (inv_ref, team_raw, tribe_raw, owner_raw) in actor_infos:
         inv = _resolve(inv_ref, lookup)
         if inv is None:
             continue
+        _materialize_partial(inv, _INVENTORY_COMPONENT_NAMES)
         refs = _prop(inv, "InventoryItems")
         if not isinstance(refs, list) or not refs:
             continue
-        tid = _int(_prop(actor, "TargetingTeam"))
-        tribe_name = _str(_prop(actor, "TribeName")) or _str(_prop(actor, "OwnerName"))
         info = {
-            "TargetingTeam": tid,
-            "TribeName": tribe_name,
+            "TargetingTeam": _int(team_raw),
+            "TribeName": _str(tribe_raw) or _str(owner_raw),
         }
         for ref in refs:
             item_obj = _resolve(ref, lookup)
@@ -1426,7 +1592,45 @@ def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.
                 continue
             if item_id not in out:
                 out[item_id] = info
+        _drain_lazy(save)
     return out
+
+
+def _iter_inv_actor_info(
+    save: t.Any,
+) -> t.Iterator[tuple[t.Any, tuple[t.Any, t.Any, t.Any, t.Any]]]:
+    """Fallback actor walk for saves without a fused classification capture.
+
+    Yields the same ``(actor_id, (inv_ref, team, tribe, owner))`` shape the
+    container capture stores, walking every non-item, non-component actor.
+    Items are contained, never containers, and status/inventory component
+    objects never own an inventory themselves, so both are skipped on header
+    data alone (no property parse).
+    """
+    objects = getattr(save, "objects", None) or []
+    iterable = objects.values() if isinstance(objects, dict) else objects
+    for actor in iterable:
+        if getattr(actor, "is_item", False):
+            continue
+        cn = getattr(actor, "class_name", "") or ""
+        # Component patterns mirror container._classify_world's pre-filter:
+        # tight enough to spare modded structures whose class names merely
+        # contain "Inventory" (e.g. StructureBP_InventoryCars_C).
+        if "StatusComponent" in cn or "PrimalInventory" in cn or "InventoryComponent" in cn:
+            continue
+        inv_ref = _prop(actor, "MyInventoryComponent")
+        if inv_ref is None:
+            _drain_lazy(save)
+            continue
+        yield (
+            getattr(actor, "id", None),
+            (
+                inv_ref,
+                _prop(actor, "TargetingTeam"),
+                _prop(actor, "TribeName"),
+                _prop(actor, "OwnerName"),
+            ),
+        )
 
 
 def _export_world_cryopods(
@@ -1449,6 +1653,7 @@ def _export_world_cryopods(
         return []
     lookup = _save_lookup(save)
     owner_lookup = _build_item_owner_lookup(save, lookup)
+    summaries = _cryo_summary_cache(save)
     out: list[dict[str, t.Any]] = []
     empty_lookup: dict[t.Any, t.Any] = {}
     for item_obj, cryo in iter_cryos():
@@ -1458,6 +1663,11 @@ def _export_world_cryopods(
         # Infer tribe/owner from containing inventory when the decoded
         # creature blob did not supply them (ASA partial decode path).
         item_id = getattr(item_obj, "id", None)
+        if summaries is not None and item_id is not None:
+            # Leave the display summary for the inventory listings that will
+            # encounter this same pod later (cryofridges, pawns, vaults), so
+            # they never re-decode the blob.
+            summaries[item_id] = _cryo_summary(cryo)
         owner_info = owner_lookup.get(item_id) if item_id is not None else None
         if owner_info is not None:
             for key, val in owner_info.items():
@@ -1468,6 +1678,7 @@ def _export_world_cryopods(
         # flag so consumers can distinguish in-world tames from stored ones.
         record["cryo"] = True
         out.append(record)
+        _drain_lazy(save)
     return out
 
 
@@ -1838,7 +2049,9 @@ def _iter_wild(save: t.Any, map_config: MapConfig | None) -> t.Iterator[dict[str
     is_asa = bool(getattr(save, "is_asa", False))
     lookup = _save_lookup(save)
     for obj in objects:
+        _materialize_partial(obj, _CREATURE_RECORD_NAMES)
         yield _wild_dict(obj, _status_for(obj, lookup), map_config, is_asa)
+        _drain_lazy(save)
 
 
 def _player_from_profile(
@@ -1929,7 +2142,7 @@ def _player_from_object(
         "active": active_dt.isoformat() if active_dt is not None else None,
         "ccc": gps["ccc"],
         "achievements": [],
-        "inventory": _inventory_items(obj, inv_lookup),
+        "inventory": _inventory_items(obj, inv_lookup, _cryo_summary_cache(save)),
         "netAddress": "",
         "steamid": "",
         "dataFile": "",
@@ -2124,6 +2337,7 @@ def _iter_players(
                 record["inventory"] = inv_list
             inv_list.extend(spliced)
         yield record
+        _drain_lazy(save)
     # Tribe members with no .arkprofile surface as stub players (legacy +N).
     for tid, pid, name in allocation["member_stubs"]:
         yield _member_stub_player(tid, pid, name, tribe_names.get(tid, ""))
@@ -2153,7 +2367,7 @@ def _tribe_members_from_parser(
 ) -> list[dict[str, t.Any]]:
     """Legacy member shape: {ign, lvl, playerid, playername, steamid}.
 
-    When ``profile_index`` (player_id → Profile) is supplied, fills ``lvl``
+    When ``profile_index`` (player_id â†’ Profile) is supplied, fills ``lvl``
     and ``steamid`` from the matching ``.arkprofile``. Tribe files don't
     carry per-member level / platform id themselves; the join is the only
     way to enrich them.
@@ -2386,21 +2600,45 @@ def _tribe_entry_info(
 
 
 def _distinct_team_names(
+    save: t.Any,
     objects: t.Iterable[t.Any],
     name_props: tuple[str, ...],
     min_team: int,
 ) -> dict[int, str]:
-    """Map each distinct ``TargetingTeam >= min_team`` to a first-seen name."""
+    """Map each distinct ``TargetingTeam >= min_team`` to a first-seen name.
+
+    The fused classification pass captured each classified object's
+    TargetingTeam (``_classified_teams``) and its OwnerName / TamerString /
+    TribeName triple (``_classified_names``) while the property block was
+    resident, so on lazy saves this walk normally parses nothing. The _prop
+    fallback covers wrapper saves whose objects never went through that pass.
+    """
+    container = getattr(save, "container", None)
+    teams = getattr(container, "_classified_teams", None) or {}
+    cap_names = getattr(container, "_classified_names", None) or {}
+    name_slots = tuple(("OwnerName", "TamerString", "TribeName").index(p) for p in name_props)
     out: dict[int, str] = {}
     for obj in objects:
-        tid = _int(_prop(obj, "TargetingTeam"))
+        oid = getattr(obj, "id", None)
+        tid = teams.get(oid) if oid is not None else None
+        if tid is None:
+            tid = _int(_prop(obj, "TargetingTeam"))
+            _drain_lazy(save)
         if tid < min_team or tid in out:
             continue
+        captured = cap_names.get(oid) if oid is not None else None
         name = ""
-        for prop in name_props:
-            name = _str(_prop(obj, prop))
-            if name:
-                break
+        if captured is not None:
+            for slot in name_slots:
+                name = _str(captured[slot])
+                if name:
+                    break
+        else:
+            for prop in name_props:
+                name = _str(_prop(obj, prop))
+                if name:
+                    break
+            _drain_lazy(save)
         out[tid] = name
     return out
 
@@ -2499,7 +2737,7 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
         ("get_structures", ("OwnerName", "TamerString"), _PLAYER_TEAM_THRESHOLD),
         ("get_tamed_creatures", ("TribeName", "TamerString"), 1),
     ):
-        team_names = _distinct_team_names(_world_objects(save, getter, ""), props, floor)
+        team_names = _distinct_team_names(save, _world_objects(save, getter, ""), props, floor)
         for tid, nm in team_names.items():
             if tid not in names:
                 order.append(tid)
@@ -2727,7 +2965,7 @@ def _structure_dict(
         # the JSON, never JSON null. Match that (avoids a null-vs-string flip
         # for structures whose creation time can't be resolved).
         "created": _structure_created(obj, save) or "",
-        "inventory": _inventory_items(obj, lookup),
+        "inventory": _inventory_items(obj, lookup, _cryo_summary_cache(save)),
         "decay_reset": bool(_prop(obj, "bHasResetDecayTime", default=False)),
         "last_ally_in_range": (
             d.isoformat()
@@ -2794,12 +3032,15 @@ def _iter_structures(save: t.Any, map_config: MapConfig | None) -> t.Iterator[di
     # the same name the tribes export uses (file TribeName / stub OwnerName).
     tribe_names = _assemble_tribes(save)["names"]
     for obj in objects:
+        _materialize_partial(obj, _STRUCTURE_RECORD_NAMES)
         team = _int(_prop(obj, "TargetingTeam"))
         if team < _PLAYER_TEAM_THRESHOLD and _is_excluded_abandoned(getattr(obj, "class_name", "") or ""):
             # Unowned map element / crate / debug actor: legacy drops these
             # from ASV_Structures (surfaced via ASV_MapStructures instead).
+            _drain_lazy(save)
             continue
         yield _structure_dict(obj, save, lookup, map_config, tribe_names)
+        _drain_lazy(save)
 
 
 # Mirrors C# ContentContainer.cs:846. Order matters: first match wins.
@@ -2852,13 +3093,15 @@ def _iter_map_structures(save: t.Any, map_config: MapConfig | None) -> t.Iterato
         if loc is None:
             continue
         if _prop(obj, "TargetingTeam") is not None:
+            _drain_lazy(save)
             continue
         data: dict[str, t.Any] = {
             "struct": label,
-            "inventory": _inventory_items(obj, lookup),
+            "inventory": _inventory_items(obj, lookup, _cryo_summary_cache(save)),
         }
         data.update(_gps_payload(obj, map_config))
         yield data
+        _drain_lazy(save)
 
 
 # Legacy ASVExport.exe filenames. Single canonical schema.

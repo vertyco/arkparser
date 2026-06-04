@@ -24,6 +24,7 @@ A pure-Python library for parsing ARK: Survival Evolved (ASE) and ARK: Survival 
 - **Dual format**: automatic ASE (v5-12) / ASA (v13-14+, SQLite) detection
 - **Legacy-parity export**: drop-in JSON output matching `ASVExport.exe` schema, plus parser-only extras under descriptive snake_case keys (no namespace prefix; never overloading a legacy key)
 - **Fast**: pure-Python `BinaryReader` (`int.from_bytes` + `struct.Struct` unpackers, slots-based dataclasses), a 30 MB ASE save (65k objects) loads in ~3s on CPython 3.14
+- **Memory-bounded**: streaming JSON export plus an opt-in lazy parse mode (`lazy_properties=True`, ASE and ASA) that materializes property blocks on demand and evicts them as records stream to disk; a 1.8 GB / 1.79M-object busy-PvE ASE save exports in 2.5 GB peak RSS instead of 7.1 GB, and a 217k-object ASA save in 307 MB instead of 853 MB (and slightly faster)
 
 ## Installation
 
@@ -97,6 +98,38 @@ print(f"Structures: {len(save.get_structures())}")
 print(f"Parse errors: {save.parse_error_count}")
 print(f"Is ASA: {save.is_asa}")
 ```
+
+### Low-memory parsing (large saves)
+
+By default every object's property block is parsed up front, which on a busy
+multi-GB PvE save means a multi-GB resident object graph. `lazy_properties=True`
+parses object headers eagerly but defers each property block until something
+reads it, then the export drivers evict it again once the record has been
+written:
+
+```python
+from arkparser import WorldSave, export_to_files
+from arkparser.common import get_map_config
+
+save = WorldSave.load("path/to/Fjordur.ark", lazy_properties=True)       # ASE
+save = WorldSave.load("path/to/TheIsland_WP.ark", lazy_properties=True)  # ASA
+export_to_files(save, "output/", get_map_config("fjordur.ark"))
+```
+
+Output is identical to eager mode (validated record-for-record). ASE retains
+the file reader and re-seeks each object's block on demand; ASA retains the
+SQLite connection (one held read transaction) and re-fetches row blobs by
+GUID. On ASA v14+ saves the export pipeline additionally uses partial decodes:
+a verified byte-exact skip walk that parses only the property names a record
+needs, with any out-of-whitelist read transparently upgrading to the full
+block.
+
+Measured load + export, same machine: a 1.8 GB Fjordur PvE ASE save (1.79M
+objects) drops from ~7.1 GB peak RSS / 348 s eager to ~2.5 GB / 287 s lazy; a
+233 MB ASA TheIsland save (217k objects) drops from 853 MB / 38 s eager to
+307 MB / ~36 s lazy. Property access on a lazy save is transparent: any
+`get_property_value` call materializes the block on demand, so all getters and
+exports work unchanged.
 
 ### Cryopod-stored Creatures
 
@@ -496,7 +529,9 @@ Key methods:
 
 | Method | Returns | Description |
 |---|---|---|
-| `load(source, load_properties=True, max_objects=None)` | `WorldSave` | Load and parse a world save |
+| `load(source, load_properties=True, max_objects=None, lazy_properties=False)` | `WorldSave` | Load and parse a world save (`lazy_properties`: on-demand property parsing, ASE + ASA, see Quick Start) |
+| `materialize_object(obj, names=None)` | `None` | Parse one lazy object's deferred property block (called automatically on property access; `names` is an ASA v14+ partial-decode hint) |
+| `evict_materialized()` | `int` | Release every property block materialized since the last call (lazy saves; no-op eager) |
 | `get_creatures()` | `list[GameObject]` | All creatures |
 | `get_tamed_creatures()` / `get_wild_creatures()` | `list[GameObject]` | Filtered creature sets |
 | `get_structures()` | `list[GameObject]` | Tribe-owned placed structures |
@@ -524,7 +559,7 @@ Key methods:
 | `properties` | `list[Property]` | Parsed property list |
 | `parent` / `components` | `GameObject \| None` / `dict[str, GameObject]` | Relationships |
 
-Lookup helpers: `get_property(name, index=None)`, `get_property_value(name, default=None, index=None)`, `get_properties_by_name(name)`, `has_property(name)`, `to_dict()`.
+Lookup helpers: `get_property(name, index=None)`, `get_property_value(name, default=None, index=None)`, `get_properties_by_name(name)`, `has_property(name)`, `to_dict()`. On lazy saves every helper materializes the deferred property block transparently; `evict_properties()` releases it again (re-access re-parses, so eviction is always safe).
 
 #### GameObjectContainer (`arkparser.GameObjectContainer`)
 
@@ -639,6 +674,11 @@ python -m pytest tests/ -v
 ```
 
 Tests live in `tests/`. Byte-level layout tests (`test_v13_property_layouts.py`, `test_binary_reader_layouts.py`) pin the canonical v13/v14 property body byte sequences with no file-fixture dependency. Integration tests (`test_world_save.py`, `test_export.py`, etc.) skip cleanly when their referenced save files are not present under `references/examples/`.
+
+Two suites guard export output against drift:
+
+- **Golden manifests** (`tests/test_golden_exports.py` + `tests/golden/*.json`): a per-map fingerprint of `export_all` (record count, field-key union, order-independent sha256) for 17 real saves (10 ASE map dumps + 7 ASA). Any change to parsing or export that alters output fails the matching map. Regenerate intentionally with `ARKPARSER_UPDATE_GOLDEN=1`.
+- **Lazy parity** (`tests/test_lazy_properties.py`): proves `lazy_properties=True` yields property-for-property identical objects (ASE and ASA), that evict/re-materialize round-trips, and that full lazy exports match the committed eager goldens. The ASA partial-decode skip walk is additionally verified byte-exact against the full parser over every object of every local ASA fixture by `references/scripts/verify_partial_walk.py`.
 
 ## Credits
 

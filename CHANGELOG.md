@@ -5,6 +5,104 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.6.0]
+
+Chunked/lazy-parse round: memory-bounded parsing for large ASE saves plus the
+performance work that came with it. Output is unchanged (guarded by the new
+golden suite); the public API grows one keyword argument.
+
+### Added
+
+- **Lazy property parsing (ASE)**: `WorldSave.load(path, lazy_properties=True)`
+  parses object headers eagerly and defers every property block until first
+  access (`GameObject` getters materialize transparently); export drivers evict
+  blocks again as records stream to disk. New: `WorldSave.materialize_object`,
+  `WorldSave.evict_materialized`, `GameObject.evict_properties`,
+  `BinaryReader.from_file_mmap`, `BinaryReader.trim_working_set`. Fjordur PvE
+  (1.8 GB ark, 1.79M objects) load+export: **~7.1 GB peak RSS / 348 s eager →
+  ~2.5 GB / 287 s lazy**; legacy `ASVExport.exe` needs 8.2 GB / 217 s on the
+  same save.
+- **Lazy property parsing (ASA)**: the same flag now covers SQLite saves. The
+  loader parses headers from each `game` row blob, drops the blob, and retains
+  the connection (one held read transaction; per-statement implicit
+  transactions cost a Windows file lock/unlock per fetch, ~16x slower);
+  `materialize_object` re-fetches a row by GUID on demand. On v14+ saves the
+  classification pass and the record builders use **partial decodes**: a skip
+  walk that decodes only a whitelisted name set per record kind and skips
+  every other property body via verified byte-exact layout arithmetic
+  (`read_properties_partial`; proven against the full parser over 1.49M
+  objects across all 7 local ASA fixtures by
+  `references/scripts/verify_partial_walk.py`). Reads outside the whitelist
+  transparently upgrade to a full decode, so the whitelists are perf hints,
+  never correctness inputs. ASA TheIsland (233 MB, 217k objects) load+export:
+  **853 MB peak RSS / 38 s eager → 307 MB / ~36 s lazy**; output identical
+  (goldens + record-for-record comparison on scorchedearth / theisland /
+  ragnarok).
+- **Golden export manifests**: `tests/golden/*.json` fingerprint `export_all`
+  for 17 real saves (count + field-key union + order-independent sha256);
+  `tests/test_golden_exports.py` fails on any output drift. Lazy-vs-eager
+  parity covered by `tests/test_lazy_properties.py`.
+
+### Changed (performance, output-identical)
+
+- Fused creature/structure classification into one walk with a header-data
+  pre-filter: items and status/inventory components are never property-probed
+  (component patterns are deliberately tighter than bare "Inventory" so modded
+  structures like `StructureBP_InventoryCars_C` still classify via OwnerName).
+- Cryopod display summaries: each pod blob is fully decoded once (for its
+  ASV_Tamed record); inventory listings (cryofridges, pawns, vaults) reuse a
+  per-pod `(dino_id, creature, name)` summary instead of re-decoding. Was 35%
+  of a busy-PvE export.
+- ASE property-header fast path (single fused 4-int32 unpack + inlined
+  name-table lookups), interned name tables, cached `_pascal_to_snake`,
+  frozenset property-type dispatch, inlined scalar leaf case in
+  `normalize_indexed_data`.
+- ASA worldsave hot path: fused int32-pair reads in the property header and
+  simple-value prefix, direct hex GUID formatting (`guid_str_le`, ~2.5x
+  cheaper than `str(uuid.UUID(bytes_le=...))`, asserted equivalent in tests),
+  captured OwnerName/TamerString/TribeName during classification so the tribe
+  synthesis walks re-parse nothing, and a single ordered table scan feeding
+  classification blobs instead of one SELECT per object.
+
+## [0.5.4]
+
+### Fixed
+
+- **ASA cryopod class names**: strip the trailing UE actor instance suffix
+  (`Raptor_Character_BP_C_2145673735` → `Raptor_Character_BP_C`) sourced from
+  `CustomItemDatas`; the spawn id leaked into the ASV_Tamed `creature` field.
+  Variant suffixes (`_Aberrant_C`, ...) are untouched.
+
+## [0.5.3]
+
+### Fixed
+
+- **Tribe member ranks on busy saves**: `normalize_indexed_list` now expands
+  `bytes`/`bytearray` values element-wise to `list[int]`, restoring the
+  pre-0.5.2 shape for iterating consumers (`MembersRankGroups` crashed the
+  full export on live PvE saves). Cryopod byte blobs keep the `bytes` memory
+  win (they are key-accessed, never iterated through this path).
+
+## [0.5.2]
+
+### Changed (memory)
+
+- `@dataclass(slots=True)` on `Property`, all 20 subclasses, and
+  `PropertyHeader` (drops per-instance `__dict__`).
+- Raw `ByteProperty` arrays are stored as one `bytes` blob instead of
+  `list[int]` (8x smaller; cryopod blobs dominate busy saves). Fjordur ASE
+  (302k objects) load+export peak: 1228 MB → 899 MB (-27%); output
+  byte-identical.
+
+## [0.5.1]
+
+### Changed (memory)
+
+- `export_to_files` streams each record straight to the file (exporters became
+  `_iter_*` generators); `export_all` still materializes for in-memory callers.
+  Eliminates the multi-GB export-phase spike from holding all seven record
+  lists plus a whole-file `json.dumps` string (Ragnarok PvE peak 7.4 GB → 5.0 GB).
+
 ## [0.5.0]
 
 Major legacy-parity pass driven by a full-codebase review and validated against
@@ -60,7 +158,7 @@ exports now emit more records / different field values to match legacy**, see
 
 ### Behavioral changes (read before upgrading a consumer)
 
-- **`ASV_Tribes` / `ASV_TribeLogs` record counts increase substantially** (≈3–10×
+- **`ASV_Tribes` / `ASV_TribeLogs` record counts increase substantially** (≈3-10×
   on busy maps), mostly stub tribes (`tribeid` + name, `players: 0`). Consumers
   that ingest these (e.g. ArkViewer → SQLite) will see many more rows.
 - **Abandoned structures now report `tribeid = -2147483648`** (was `0`). A filter

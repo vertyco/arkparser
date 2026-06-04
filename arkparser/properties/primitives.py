@@ -15,9 +15,9 @@ Property Types:
 from __future__ import annotations
 
 import typing as t
-import uuid
 from dataclasses import dataclass
 
+from ..common.binary_reader import guid_str_le
 from .base import Property, PropertyHeader, read_name
 
 if t.TYPE_CHECKING:
@@ -47,8 +47,9 @@ def _read_worldsave_simple_prefix(reader: BinaryReader) -> tuple[int, int, int]:
         Tuple of (data_size, flag_byte, array_index).
         For BoolProperty, the bool value should be derived from flag & 0x10.
     """
-    _padding = reader.read_int32()  # Only 4 zeros (type_instance already read by header)
-    data_size = reader.read_int32()
+    # Padding (4 zeros; type_instance already read by header) + data size,
+    # fused: this prefix runs once per simple property, millions per save.
+    _padding, data_size = reader.read_int32_pair()
     flag = reader.read_uint8()
 
     array_index = 0
@@ -657,8 +658,7 @@ class ObjectProperty(Property):
                 guid_bytes = reader.read_bytes(16)
                 if all(b == 0 for b in guid_bytes):
                     return cls(name=header.name, index=index)
-                guid = uuid.UUID(bytes_le=guid_bytes)
-                return cls(name=header.name, index=index, _object_name=str(guid))
+                return cls(name=header.name, index=index, _object_name=guid_str_le(guid_bytes))
         elif is_asa:
             extra_byte = reader.read_uint8()
             index = header.index

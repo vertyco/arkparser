@@ -21,7 +21,10 @@ Example:
 
 from __future__ import annotations
 
+import ctypes
+import mmap
 import struct
+import sys
 from pathlib import Path
 from uuid import UUID
 
@@ -32,6 +35,25 @@ from .exceptions import EndOfDataError
 _S_FLOAT = struct.Struct("<f")
 _S_DOUBLE = struct.Struct("<d")
 _S_INT32_PAIR = struct.Struct("<ii")
+_S_INT32_X4 = struct.Struct("<4i")
+
+
+def guid_str_le(raw: bytes) -> str:
+    """Format a 16-byte little-endian GUID as its canonical string.
+
+    Byte-for-byte equivalent to ``str(uuid.UUID(bytes_le=raw))`` (asserted in
+    tests) at ~40% of the cost; ASA saves key every game row and actor
+    transform by GUID, so this runs hundreds of thousands of times per load.
+    """
+    assert len(raw) == 16, "GUID must be 16 bytes"
+    h = raw.hex()
+    return (
+        h[6:8] + h[4:6] + h[2:4] + h[0:2]
+        + "-" + h[10:12] + h[8:10]
+        + "-" + h[14:16] + h[12:14]
+        + "-" + h[16:20]
+        + "-" + h[20:32]
+    )
 
 
 class BinaryReader:
@@ -39,10 +61,14 @@ class BinaryReader:
 
     __slots__ = ("_buf", "_pos", "_size", "save_version")
 
-    def __init__(self, data: bytes | memoryview, save_version: int = 0) -> None:
-        # Materialize to bytes once. CPython 3.14 small-bytes slicing is
-        # significantly faster than memoryview slicing for the per-read
-        # ``int.from_bytes(buf[a:b], ...)`` hot path used here.
+    def __init__(self, data: bytes | memoryview | mmap.mmap, save_version: int = 0) -> None:
+        # Materialize memoryviews to bytes once. CPython 3.14 small-bytes
+        # slicing is significantly faster than memoryview slicing for the
+        # per-read ``int.from_bytes(buf[a:b], ...)`` hot path used here.
+        # ``mmap`` buffers are kept as-is: slicing an mmap returns plain
+        # ``bytes``, so every read path behaves identically while the file
+        # contents stay out of the Python heap (used by lazy world saves,
+        # which retain the reader for the whole export).
         if isinstance(data, memoryview):
             self._buf = bytes(data)
         else:
@@ -61,8 +87,45 @@ class BinaryReader:
         self.close()
 
     def close(self) -> None:
-        # Nothing to release; underlying buffer is plain bytes.
+        # Plain-bytes buffers have nothing to release; mmap buffers unmap.
+        if isinstance(self._buf, mmap.mmap):
+            self._buf.close()
         return None
+
+    def trim_working_set(self) -> bool:
+        """Drop this reader's clean mmap pages from the process working set.
+
+        A lazy world save touches every property page over the course of an
+        export. Those pages are clean and file-backed, but they accumulate in
+        the working set until peak RSS approaches heap + whole file size. On
+        POSIX, madvise(MADV_DONTNEED) releases just this mapping. Windows has
+        no per-range call usable on a read-only mapping, so EmptyWorkingSet
+        trims the whole process; evicted heap pages soft-fault back from the
+        standby list with no disk I/O.
+
+        Pre: none (safe on any reader). Post: returns True only when the
+        reader is mmap-backed and a trim was actually issued; plain-bytes
+        readers return False and do nothing.
+        """
+        if not isinstance(self._buf, mmap.mmap):
+            return False
+        if sys.platform == "win32":
+            kernel32 = ctypes.windll.kernel32
+            kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+            handle = kernel32.GetCurrentProcess()
+            # EmptyWorkingSet lives in psapi.dll on older Windows and is
+            # forwarded from kernel32 as K32EmptyWorkingSet on newer builds.
+            empty = getattr(kernel32, "K32EmptyWorkingSet", None)
+            if empty is None:
+                empty = ctypes.windll.psapi.EmptyWorkingSet
+            empty.argtypes = [ctypes.c_void_p]
+            empty.restype = ctypes.c_int
+            return bool(empty(handle))
+        madvise_flag = getattr(mmap, "MADV_DONTNEED", None)
+        if madvise_flag is None:
+            return False
+        self._buf.madvise(madvise_flag)
+        return True
 
     # =========================================================================
     # Factory Methods
@@ -71,6 +134,23 @@ class BinaryReader:
     @classmethod
     def from_file(cls, path: str | Path) -> BinaryReader:
         return cls(Path(path).read_bytes())
+
+    @classmethod
+    def from_file_mmap(cls, path: str | Path) -> BinaryReader:
+        """Memory-map the file instead of reading it onto the heap.
+
+        For readers retained over a long export (lazy world saves): the OS
+        pages the contents in on demand and may reclaim them under pressure,
+        so the file bytes never count against the Python heap. Falls back to
+        :meth:`from_file` for empty files (Windows cannot mmap length 0).
+        """
+        p = Path(path)
+        if p.stat().st_size == 0:
+            return cls.from_file(p)
+        with open(p, "rb") as fh:
+            # mmap duplicates the OS handle; closing fh afterwards is safe.
+            buf = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+        return cls(buf)
 
     @classmethod
     def from_bytes(cls, data: bytes) -> BinaryReader:
@@ -199,6 +279,19 @@ class BinaryReader:
         a, b = _S_INT32_PAIR.unpack_from(self._buf, self._pos)
         self._pos += 8
         return a, b
+
+    def read_int32_x4(self) -> tuple[int, int, int, int]:
+        """Read four signed int32 values in a single struct unpack call.
+
+        Hot path for ASE property headers: after the name pair, the type
+        name-ref (index + instance) and data_size + index are 16 contiguous
+        bytes. One call beats two read_int32_pair calls.
+        """
+        if self._pos + 16 > self._size:
+            raise EndOfDataError(16, self._size - self._pos)
+        vals = _S_INT32_X4.unpack_from(self._buf, self._pos)
+        self._pos += 16
+        return vals
 
     # =========================================================================
     # Floating Point Types

@@ -74,12 +74,64 @@ class GameObject:
         default=None, repr=False, compare=False
     )
 
+    # Lazy-loading hooks (saves loaded with lazy_properties=True). When
+    # _lazy_source is set (the owning WorldSave), property access auto-loads the
+    # deferred property block via _ensure_loaded(); evict_properties() releases
+    # it again. All stay at their defaults on the eager path, where
+    # _ensure_loaded() is a no-op.
+    #
+    # _partial_names: non-None only while the object holds a partial decode
+    # (ASA v14+ materialize_object(names=...)): the set of names that were
+    # requested. Getter lookups for names OUTSIDE the set transparently
+    # re-materialize the full block first, so a partial decode is a pure perf
+    # hint and can never change what a consumer reads.
+    _lazy_source: t.Any = field(default=None, repr=False, compare=False)
+    _props_loaded: bool = field(default=False, repr=False, compare=False)
+    _partial_names: frozenset[str] | None = field(default=None, repr=False, compare=False)
+
+    def _ensure_loaded(self) -> None:
+        """Materialize deferred properties (lazy saves); no-op otherwise.
+
+        Pre: if ``_lazy_source`` is set it is the owning WorldSave (exposes
+        ``materialize_object``). Post: ``_props_loaded`` is True on the lazy
+        path; eager objects are untouched.
+        """
+        if self._lazy_source is not None and not self._props_loaded:
+            self._lazy_source.materialize_object(self)
+            assert self._props_loaded, "materialize_object did not mark object loaded"
+
+    def _ensure_name(self, name: str) -> None:
+        """Upgrade a partial decode to the full block when ``name`` is outside it.
+
+        Pre: ``name`` is the property about to be looked up. Post: if the
+        resident decode was partial and did not cover ``name``, the full block
+        is re-materialized (and the property index invalidated) before the
+        lookup proceeds; otherwise no-op.
+        """
+        pn = self._partial_names
+        if pn is not None and name not in pn and self._lazy_source is not None:
+            self._partial_names = None
+            self._lazy_source.materialize_object(self)
+            assert self._props_loaded, "full re-materialization failed"
+
+    def _ensure_full(self) -> None:
+        """Upgrade a partial decode to the full block unconditionally.
+
+        Raw ``properties`` iterators (serialization, prop-index dumps) call
+        this so they never observe a whitelist subset.
+        """
+        if self._partial_names is not None and self._lazy_source is not None:
+            self._partial_names = None
+            self._lazy_source.materialize_object(self)
+            assert self._props_loaded, "full re-materialization failed"
+
     def _build_prop_index(self) -> dict[str, "Property | dict[int, Property]"]:
         # First-writer wins, matching legacy C# GetPropertyValue
         # (IPropertyContainer.cs:45) which returns the first (name, index)
         # match. _serialize_properties keeps all occurrences in the additive
         # `properties` dict; lookups intentionally mirror legacy here. Do not
         # switch to last-wins.
+        self._ensure_loaded()
         idx: dict[str, "Property | dict[int, Property]"] = {}
         for prop in self.properties:
             existing = idx.get(prop.name)
@@ -117,6 +169,7 @@ class GameObject:
 
     def get_property(self, name: str, index: int | None = None) -> Property | None:
         """Get a property by name and optional index (None = first by insertion)."""
+        self._ensure_name(name)
         idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
         bucket = idx.get(name)
         if bucket is None:
@@ -137,6 +190,7 @@ class GameObject:
 
     def get_properties_by_name(self, name: str) -> list[Property]:
         """Get all properties with the given name (any index)."""
+        self._ensure_name(name)
         idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
         bucket = idx.get(name)
         if bucket is None:
@@ -147,6 +201,7 @@ class GameObject:
 
     def has_property(self, name: str) -> bool:
         """Check if this object has a property with the given name."""
+        self._ensure_name(name)
         idx = self._prop_index if self._prop_index is not None else self._build_prop_index()
         return name in idx
 
@@ -228,6 +283,8 @@ class GameObject:
         indexed stat arrays where only a single entry at index 0 may be
         populated; collapsing it would change the data shape.
         """
+        self._ensure_loaded()
+        self._ensure_full()
         grouped: dict[str, list[Property]] = defaultdict(list)
         for prop in self.properties:
             if not self._is_object_ref(prop):
@@ -365,6 +422,7 @@ class GameObject:
                     properties.append(prop)
             except Exception:
                 self.properties = properties
+                self._props_loaded = True
                 if next_object is None:
                     raise
 
@@ -377,6 +435,7 @@ class GameObject:
             self.properties = properties
 
         self._prop_index = None
+        self._props_loaded = True
 
         # Any remaining data before next object is extra data
         if next_object is not None:
@@ -384,6 +443,24 @@ class GameObject:
             remaining = next_offset - reader.position
             if remaining > 0:
                 self.extra_data = reader.read_bytes(remaining)
+
+    def evict_properties(self) -> None:
+        """Release parsed properties to reclaim RAM.
+
+        Pre: ``self`` is a normal GameObject (properties may or may not be
+        loaded). Post: ``properties`` / ``extra_data`` / ``_prop_index`` are
+        cleared; the object can be re-populated via
+        ``WorldSave.materialize_object``. Header fields (id, names, class_name,
+        location, properties_offset) are untouched, so the object stays
+        classifiable and re-loadable. Idempotent.
+        """
+        assert isinstance(self.properties, list), "properties must be a list"
+        self.properties = []
+        self.extra_data = None
+        self._prop_index = None
+        self._props_loaded = False
+        self._partial_names = None
+        assert self._prop_index is None, "prop index not cleared"
 
     def add_component(self, component: GameObject) -> None:
         """Add a component to this object under its normalized key."""
