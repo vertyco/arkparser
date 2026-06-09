@@ -1,5 +1,8 @@
 """Regression tests for export helpers against real parser objects."""
 
+import datetime as dt
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -18,6 +21,29 @@ from arkparser.export import (
 
 _EXAMPLES = Path(__file__).parent.parent / "references" / "examples"
 _ASE_SCORCHED_EARTH = _EXAMPLES / "ase" / "maps" / "scorchedearth" / "ScorchedEarth_P.ark"
+_MAP_DUMP_EXTINCTION = Path(__file__).parent.parent / "references" / "map_dumps" / "evolved" / "extinction"
+
+
+def _first_dump_file(pattern: str) -> Path:
+    """First map-dump fixture matching ``pattern``, else skip the test."""
+    if _MAP_DUMP_EXTINCTION.is_dir():
+        files = sorted(_MAP_DUMP_EXTINCTION.glob(pattern))
+        if files:
+            return files[0]
+    pytest.skip(f"no {pattern} fixture under {_MAP_DUMP_EXTINCTION}")
+
+
+def _profile_with_last_login() -> Profile:
+    """First map-dump profile carrying LastLoginTime, else skip the test."""
+    if _MAP_DUMP_EXTINCTION.is_dir():
+        for path in sorted(_MAP_DUMP_EXTINCTION.glob("*.arkprofile"))[:50]:
+            try:
+                profile = Profile.load(path)
+            except Exception:  # noqa: BLE001 - corrupt fixture must not abort
+                continue
+            if profile.last_login_time and profile.player_id:
+                return profile
+    pytest.skip(f"no profile with LastLoginTime under {_MAP_DUMP_EXTINCTION}")
 
 _ASV_NAMES = {
     "ASV_Tamed",
@@ -70,6 +96,65 @@ def test_export_tribes_uses_tribe_parser(ase_tribe_path: Path) -> None:
     assert exported[0]["tribeid"] == tribe.tribe_id
     assert exported[0]["tribe"] == tribe.name
     assert exported[0]["players"] == tribe.member_count
+
+
+def test_export_tribes_active_is_file_mtime(tmp_path: Path) -> None:
+    """Tribe ``active`` mirrors legacy ContentTribe.LastActive: the .arktribe
+    file's write time, never a value derived from in-game log day numbers
+    (those use the game calendar, not real seconds, and produced far-future
+    dates)."""
+    tribe_path = _first_dump_file("*.arktribe")
+    copy = tmp_path / tribe_path.name
+    shutil.copy2(tribe_path, copy)
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    stamp = dt.datetime(2024, 5, 1, 12, 0, 0, tzinfo=local_tz)
+    os.utime(copy, (stamp.timestamp(), stamp.timestamp()))
+    tribe = Tribe.load(copy)
+    now = dt.datetime.now(tz=local_tz)
+    holder = type("Holder", (), {"tribes": [tribe], "file_mtime": now, "game_time": 5_000.0})()
+    exported = export_tribes(holder)
+    rec = next(r for r in exported if r["tribeid"] == tribe.tribe_id)
+    assert rec["active"] is not None
+    active = dt.datetime.fromisoformat(rec["active"])
+    assert active.timestamp() == pytest.approx(stamp.timestamp(), abs=2)
+    assert active <= now
+
+
+def test_export_tribes_solo_active_from_profile_last_login() -> None:
+    """A profile-only (solo) tribe gets ``active`` from the member's
+    LastLoginTime converted through the save anchor, matching legacy
+    ContentTribe.LastActive over allocated players."""
+    profile = _profile_with_last_login()
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    now = dt.datetime.now(tz=local_tz)
+    game_time = float(profile.last_login_time) + 3_600.0
+    holder = type(
+        "Holder",
+        (),
+        {"tribes": [], "profiles": [profile], "file_mtime": now, "game_time": game_time},
+    )()
+    exported = export_tribes(holder)
+    rec = next(r for r in exported if r["tribeid"] == profile.player_id)
+    assert rec["active"] is not None
+    active = dt.datetime.fromisoformat(rec["active"])
+    expected = now - dt.timedelta(seconds=3_600)
+    assert active.timestamp() == pytest.approx(expected.timestamp(), abs=2)
+
+
+def test_export_tribes_active_never_future() -> None:
+    """Future candidates are discarded (legacy filters d <= DateTime.Now)."""
+    profile = _profile_with_last_login()
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    now = dt.datetime.now(tz=local_tz)
+    game_time = max(float(profile.last_login_time) - 100_000_000.0, 1.0)
+    holder = type(
+        "Holder",
+        (),
+        {"tribes": [], "profiles": [profile], "file_mtime": now, "game_time": game_time},
+    )()
+    exported = export_tribes(holder)
+    rec = next(r for r in exported if r["tribeid"] == profile.player_id)
+    assert rec["active"] is None
 
 
 def test_export_tribe_logs_uses_tribe_parser(ase_tribe_path: Path) -> None:

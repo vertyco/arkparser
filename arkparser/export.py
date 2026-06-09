@@ -2058,6 +2058,8 @@ def _player_from_profile(
     profile: Profile,
     save: t.Any = None,
     pawn_status_by_id: dict[int, t.Any] | None = None,
+    pawn_by_data_id: dict[int, t.Any] | None = None,
+    map_config: MapConfig | None = None,
 ) -> dict[str, t.Any]:
     stat_points = [_int(profile.get_stat(i)["added"]) for i in range(12)]
     gamertag = profile.player_name or ""
@@ -2069,8 +2071,18 @@ def _player_from_profile(
     # not in the profile. Resolve via PlayerDataID -> pawn -> status. Absent
     # when the player has no spawned body (never spawned / corpse cleared).
     status = None
-    if pawn_status_by_id and profile.player_id:
-        status = pawn_status_by_id.get(int(profile.player_id))
+    pawn = None
+    if profile.player_id:
+        pid = int(profile.player_id)
+        if pawn_status_by_id:
+            status = pawn_status_by_id.get(pid)
+        if pawn_by_data_id:
+            pawn = pawn_by_data_id.get(pid)
+
+    # The profile carries no world position. When the player has a live pawn in
+    # the save, pull lat/lon/ccc from it; otherwise keep the legacy 0/0 zeroes
+    # (dead / logged-out players have no location to report).
+    gps = _gps_payload(pawn, map_config, ndigits=2) if pawn is not None else {"ccc": "0 0 0", "lat": 0.0, "lon": 0.0}
 
     out: dict[str, t.Any] = {
         "playerid": profile.player_id or 0,
@@ -2080,11 +2092,11 @@ def _player_from_profile(
         "tribe": profile.tribe_name or "",
         "sex": "Female" if profile.is_female is True else "Male",
         "lvl": profile.level,
-        "lat": 0.0,
-        "lon": 0.0,
+        "lat": gps["lat"],
+        "lon": gps["lon"],
         **_flat_stats(stat_points),
         "active": active_dt.isoformat() if active_dt is not None else None,
-        "ccc": "0 0 0",
+        "ccc": gps["ccc"],
         "achievements": [],
         "inventory": [],
         "netAddress": _str(profile.last_net_address),
@@ -2168,16 +2180,25 @@ def _player_from_object(
     return _compact(data, LEGACY_PLAYER_KEYS)
 
 
-def _player_status_by_data_id(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[int, t.Any]:
-    """Index ``MyCharacterStatusComponent`` per player by ``LinkedPlayerDataID``.
+def _player_status_by_data_id(
+    save: t.Any,
+    lookup: dict[t.Any, t.Any],
+) -> tuple[dict[int, t.Any], dict[int, t.Any]]:
+    """Index per-player pawn + status component by ``LinkedPlayerDataID``.
 
     Walks every ``PlayerPawnTest_*_C`` / ``PlayerCharacter_*`` in the world
     save, reads its ``LinkedPlayerDataID``, follows ``MyCharacterStatusComponent``
-    via ``lookup``, and stores the resolved status object. Lets profile-based
-    player exports surface live HP/stamina/food/etc. without legacy ASVPack
-    having to do the same join.
+    via ``lookup``, and stores both the resolved status object and the pawn
+    itself. The status index lets profile-based player exports surface live
+    HP/stamina/food/etc.; the pawn index lets them surface live lat/lon/ccc
+    (the pawn carries ``.location``, the profile does not), without legacy
+    ASVPack having to do the same join.
+
+    Returns ``(status_by_id, pawn_by_id)``; a pawn appears in ``pawn_by_id``
+    even when its status component fails to resolve.
     """
-    out: dict[int, t.Any] = {}
+    status_out: dict[int, t.Any] = {}
+    pawn_out: dict[int, t.Any] = {}
     objects = getattr(save, "objects", None) or []
     for obj in objects:
         cn = str(getattr(obj, "class_name", "") or "")
@@ -2186,10 +2207,11 @@ def _player_status_by_data_id(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[i
         pid = _int(_prop(obj, "LinkedPlayerDataID"))
         if not pid:
             continue
+        pawn_out[pid] = obj
         status = _status_for(obj, lookup)
         if status is not None:
-            out[pid] = status
-    return out
+            status_out[pid] = status
+    return status_out, pawn_out
 
 
 def _cluster_items_by_xuid(
@@ -2226,6 +2248,7 @@ def _player_record_for(
     entry: t.Any,
     save: t.Any,
     pawn_status_by_id: dict[int, t.Any],
+    pawn_by_data_id: dict[int, t.Any],
     lookup: dict[t.Any, t.Any],
     map_config: MapConfig | None,
 ) -> tuple[dict[str, t.Any] | None, list[str]]:
@@ -2237,7 +2260,7 @@ def _player_record_for(
     """
     join_keys: list[str] = []
     if isinstance(entry, Profile):
-        record = _player_from_profile(entry, save, pawn_status_by_id)
+        record = _player_from_profile(entry, save, pawn_status_by_id, pawn_by_data_id, map_config)
         if entry.source_path is not None and entry.source_path.stem:
             join_keys.append(entry.source_path.stem)
         if entry.unique_id:
@@ -2312,7 +2335,7 @@ def _iter_players(
     """Yield ASV_Players records one at a time (streaming form of export_players)."""
     profiles = _collection(save, "profiles", Profile)
     lookup = _save_lookup(save)
-    pawn_status_by_id = _player_status_by_data_id(save, lookup)
+    pawn_status_by_id, pawn_by_data_id = _player_status_by_data_id(save, lookup)
     cluster_items = _cluster_items_by_xuid(cluster_inventories, save) if cluster_inventories else {}
     # Legacy emits each player's tribeid as the CONTAINING tribe's id (the one
     # whose member list / team claims them), not the profile's own field. The
@@ -2321,7 +2344,9 @@ def _iter_players(
     profile_tribeid = allocation["profile_tribeid"]
     tribe_names = allocation["names"]
     for entry in profiles:
-        record, join_keys = _player_record_for(entry, save, pawn_status_by_id, lookup, map_config)
+        record, join_keys = _player_record_for(
+            entry, save, pawn_status_by_id, pawn_by_data_id, lookup, map_config
+        )
         if record is None:
             continue
         if isinstance(entry, Profile):
@@ -2388,45 +2413,67 @@ def _tribe_members_from_parser(
     return out
 
 
-def _tribe_active_iso(logs: t.Iterable[str], save: t.Any) -> str | None:
-    """Derive ``active`` ISO datetime from the most recent tribe log entry.
+def _tribe_file_date(tribe: t.Any, save: t.Any) -> dt.datetime | None:
+    """Wall-clock write time of a tribe's backing file (legacy TribeFileDate).
 
-    Tribe files don't carry an "active" timestamp directly. Each log entry
-    is formatted ``Day N, HH:MM:SS: <message>`` (game-time). The most recent
-    entry yields the highest game-second count, which combined with the
-    save's anchor (``file_mtime + (max_log_seconds - game_time)``) gives a
-    real wall-clock timestamp.
-
-    Returns ``None`` when no parseable log entry is found or the save lacks
-    conversion anchors.
+    File-backed tribes use the .arktribe mtime (ContentContainer.cs:1812);
+    tribes parsed out of the world save fall back to the save's own mtime
+    (ContentContainer.cs:734, GameSaveTime).
     """
-    max_seconds = 0
-    for raw in logs:
-        if not isinstance(raw, str):
-            continue
-        m = _LOG_RE.match(raw.strip())
-        if not m:
-            continue
+    src = getattr(tribe, "source_path", None) if tribe is not None else None
+    if src is not None:
         try:
-            day = int(m.group(1))
-        except (TypeError, ValueError):
-            continue
-        parts = m.group(2).split(":")
-        if len(parts) < 2:
-            continue
-        try:
-            h = int(parts[0])
-            mi = int(parts[1])
-            s = int(parts[2]) if len(parts) > 2 else 0
-        except (TypeError, ValueError):
-            continue
-        sec = day * 86400 + h * 3600 + mi * 60 + s
-        if sec > max_seconds:
-            max_seconds = sec
-    if not max_seconds:
+            local_tz = dt.datetime.now().astimezone().tzinfo
+            return dt.datetime.fromtimestamp(src.stat().st_mtime, tz=local_tz)
+        except OSError:
+            logger.debug("stat failed for tribe file %s", src)
+    return getattr(save, "file_mtime", None) if save is not None else None
+
+
+def _tribe_active_iso(
+    file_date: t.Any,
+    member_ids: t.Iterable[int],
+    profile_active: dict[int, dt.datetime],
+) -> str | None:
+    """Legacy ContentTribe.LastActive (ContentTribe.cs:35-49): the max of the
+    tribe file date and the members' last-active datetimes, discarding values
+    in the future. Tribe-log "Day N" stamps are game-calendar time, not real
+    seconds, so they cannot be converted with the save anchor and are unused.
+
+    Returns ``None`` when no past candidate exists.
+    """
+    assert isinstance(profile_active, dict), "profile_active must be a dict"
+    candidates: list[dt.datetime] = []
+    if isinstance(file_date, dt.datetime):
+        candidates.append(file_date if file_date.tzinfo else file_date.astimezone())
+    for i, pid in enumerate(member_ids):
+        assert i < _MAX_TRIBE_MEMBERS, "tribe member list exceeded bound"
+        active = profile_active.get(_int(pid))
+        if active is not None:
+            candidates.append(active if active.tzinfo else active.astimezone())
+    now = dt.datetime.now(dt.timezone.utc)
+    past = [c for c in candidates if c <= now]
+    if not past:
         return None
-    real = _approx_real_datetime(max_seconds, save)
-    return real.isoformat() if real is not None else None
+    return max(past).isoformat()
+
+
+def _profile_actives(profiles: list[Profile], save: t.Any) -> dict[int, dt.datetime]:
+    """``player_id -> last-active datetime`` for tribe activity rollups.
+
+    Mirrors legacy ContentPlayer.LastActiveDateTime: the profile's
+    LastLoginTime converted through the save anchor.
+    """
+    assert isinstance(profiles, list), "profiles must be a list"
+    out: dict[int, dt.datetime] = {}
+    for prof in profiles:
+        pid = _int(prof.player_id)
+        if not pid:
+            continue
+        active = _approx_real_datetime(prof.last_login_time, save)
+        if active is not None:
+            out[pid] = active
+    return out
 
 
 def _build_profile_index(save: t.Any) -> dict[int, Profile]:
@@ -2455,7 +2502,7 @@ def _tribe_from_parser(
         "tames": c.get("tames", 0),
         "uploadedTames": 0,
         "structures": c.get("structures", 0),
-        "active": _tribe_active_iso(tribe.log_entries, save),
+        "active": _tribe_file_date(tribe, save),
         "dataFile": f"{tid}.arktribe" if tid else "",
         "owner_id": tribe.owner_player_id or 0,
         "alliance_ids": tribe.alliance_ids,
@@ -2507,7 +2554,7 @@ def _tribe_from_object(
         "tames": c.get("tames", 0),
         "uploadedTames": 0,
         "structures": c.get("structures", 0),
-        "active": _tribe_active_iso(_tribe_object_logs(obj), save),
+        "active": _tribe_file_date(None, save),
         "dataFile": f"{tribe_id}.arktribe" if tribe_id else "",
         "owner_id": owner_id,
         "owner_name": _str(_prop(obj, "OwnerPlayerName")),
@@ -2725,6 +2772,7 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
                 member_name.setdefault(pid, mname)
     file_tribe_ids = set(rich) | {_UNCLAIMED_TRIBE_ID, _ABANDONED_TRIBE_ID}
     profiles = _profile_entries(save)
+    profile_active = _profile_actives(profiles, save)
     profile_tribeid, players_by_tribe = _allocate_profiles(profiles, file_tribe_ids, member_index)
     for prof in profiles:
         pid = _int(prof.player_id)
@@ -2750,6 +2798,7 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
         "logs": logs,
         "counts": counts,
         "profile_index": profile_index,
+        "profile_active": profile_active,
         "players_by_tribe": players_by_tribe,
         "profile_tribeid": profile_tribeid,
         "member_stubs": member_stubs,
@@ -2796,10 +2845,12 @@ def _members_for(tid: int, a: dict[str, t.Any]) -> list[dict[str, t.Any]]:
 def _tribe_record(tid: int, a: dict[str, t.Any]) -> dict[str, t.Any]:
     """Final ASV_Tribes record for one assembled tribe id.
 
-    File-backed tribes reuse the rich record (active/dataFile/owner/alliances)
-    but have ``players``/``members`` overridden to the allocated-player set so
+    File-backed tribes reuse the rich record (dataFile/owner/alliances) but
+    have ``players``/``members`` overridden to the allocated-player set so
     they match the legacy writer (which counts allocated profiles, not the raw
     member list). Synthesized stubs carry id + name + world-derived counts.
+    ``active`` finalizes here for both shapes: max of the tribe file date and
+    the allocated members' last-active times (legacy ContentTribe.LastActive).
     """
     players = a["players_by_tribe"].get(tid, [])
     base = a["rich"].get(tid)
@@ -2807,6 +2858,7 @@ def _tribe_record(tid: int, a: dict[str, t.Any]) -> dict[str, t.Any]:
         rec = dict(base)
         rec["players"] = len(players)
         rec["members"] = _members_for(tid, a)
+        rec["active"] = _tribe_active_iso(rec.get("active"), players, a["profile_active"])
         return rec
     c = a["counts"].get(tid, {})
     data: dict[str, t.Any] = {
@@ -2817,7 +2869,7 @@ def _tribe_record(tid: int, a: dict[str, t.Any]) -> dict[str, t.Any]:
         "tames": c.get("tames", 0),
         "uploadedTames": 0,
         "structures": c.get("structures", 0),
-        "active": None,
+        "active": _tribe_active_iso(None, players, a["profile_active"]),
         "dataFile": "",
     }
     return _compact(data, LEGACY_TRIBE_KEYS)
