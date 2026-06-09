@@ -222,3 +222,5 @@ copilot-instructions.md
 deploy.md
 map_dumps/
 docs/
+# Golden export fingerprints (derived from real saves, regenerated locally)
+tests/golden/*.json

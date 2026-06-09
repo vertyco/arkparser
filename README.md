@@ -280,7 +280,7 @@ ARK keeps player data in **two distinct places**, and the parser builds `ASV_Pla
 
 The export pipeline (`export_players`) loops over `save.profiles` (a list the caller assembles). For each entry:
 
-- If it's a `Profile` instance → `_player_from_profile` runs: fills core identity (name, gender, level, stats, tribe id, engram count, experience, active datetime from `LastLoginTime`). Leaves `lat`/`lon`/`ccc` as zero, `inventory` empty, pawn-state flags (`is_sleeping`, `is_dead`, `chibi_levels`, …) absent.
+- If it's a `Profile` instance → `_player_from_profile` runs: fills core identity (name, gender, level, stats, tribe id, engram count, experience, active datetime from `LastLoginTime`). It joins `PlayerDataID == LinkedPlayerDataID` against the world save's player pawns, so when a live pawn exists `lat`/`lon`/`ccc` come from that pawn's `.location`; players with no live pawn (dead / logged out) keep `lat`/`lon`/`ccc` at zero. `inventory` is empty and pawn-state flags (`is_sleeping`, `is_dead`, `chibi_levels`, …) absent (the profile carries neither).
 - Otherwise it's treated as a wrapped `(profile, objects)` pair pointing at an in-world `PlayerPawn` → `_player_from_object` runs: fills location, inventory, pawn-state flags, body/hair cosmetics, death timestamps, and `active` from `SavedLastTimeHadController`.
 
 For the richest output, hand `export_players` **both**, assemble a wrapper for each player that carries the `Profile` (for offline identity) *and* the in-world pawn (when present) so the merged record gets identity + live state. The current validation script only passes `Profile` instances, which is why fields like `is_sleeping` / `body_colors` / `current_weapon` show up empty in the validation output even though the parser supports them.
@@ -302,7 +302,7 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `netAddress` | legacy (now populated) | Last client IP ARK persisted (`SavedNetworkAddress` in profile `MyData`). Legacy ASVExport reads the same field (ContentPlayer.cs:157 ASE / :341 ASA). `""` when the profile lacks it (e.g. never-played placeholders). ASA stores a clean IPv4/IPv6 string; some ASE saves store an engine-truncated value (e.g. `"[2001"`) reproduced verbatim, matching legacy. |
 | `steamid`, `dataFile` | legacy | platform net id and `{steamid}.arkprofile` filename |
 | `active` | legacy (now populated) | ISO 8601 datetime of last login, converted from profile `LastLoginTime` or in-world pawn `SavedLastTimeHadController`. Legacy schema reserved the field but the old C# exporter only filled it for in-world pawns; the parser fills it for profiles too. `null` when neither source is present. |
-| `lat`, `lon`, `ccc` | legacy (now populated) | In-world position when the record was built from a `PlayerPawn` GameObject. Records sourced from profile / cluster files keep the legacy `0` / `"0 0 0"` placeholders since profiles carry no world position. |
+| `lat`, `lon`, `ccc` | legacy (now populated) | In-world position. Built directly from a `PlayerPawn` GameObject when one is passed, and for profile-sourced records the parser joins `PlayerDataID == LinkedPlayerDataID` to the world save's player pawns and pulls the matched pawn's `.location`. Records whose player has no live pawn (dead / logged out / cluster-only) keep the legacy `0` / `"0 0 0"` placeholders since there is no world position to report. |
 | `inventory` | legacy (now populated) | Items from the pawn's `MyInventoryComponent` when built from an in-world pawn. Empty list otherwise. |
 | `engram_points` | added | `TotalEngramPoints` |
 | `experience` | added | `ExperiencePoints` (status), integer |
@@ -331,7 +331,7 @@ For the richest output, hand `export_players` **both**, assemble a wrapper for e
 | `members` | legacy | list of `{ign, lvl, playerid, playername, steamid}` built from the allocated players. `lvl` and `steamid` populate from the matching `.arkprofile`; members with no profile (back-filled from the tribe's member list) carry `lvl=0`, `steamid=""`. |
 | `tames`, `structures` | legacy | counts derived from `WorldSave` (creatures + structures whose `TargetingTeam` matches) |
 | `uploadedTames` | legacy | reserved (currently `0`) |
-| `active` | legacy | ISO 8601 datetime of the most recent tribe log entry, converted from in-game "Day N, HH:MM:SS" via the save's anchor. `null` when no parseable log entries or anchors are missing. |
+| `active` | legacy | ISO 8601 datetime, legacy `ContentTribe.LastActive`: max of the tribe file's write time (`.arktribe` mtime; world-save mtime for in-save tribes) and the allocated members' last-active times (`LastLoginTime` via the save anchor), discarding future values. `null` when no past candidate exists. Tribe-log "Day N" stamps are game-calendar time and are deliberately not used. |
 | `dataFile` | legacy | `"{tribeid}.arktribe"` filename pattern. |
 | `owner_id` | added | `OwnerPlayerDataID` / parser `Tribe.owner_player_id` |
 | `owner_name` | added | `OwnerPlayerName` (object form only; parser-tribe form has no equivalent) |
