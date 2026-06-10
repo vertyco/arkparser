@@ -647,6 +647,15 @@ Schema policy:
 
 ASA worldsave property layouts differ between **v13** (`TheIsland_WP` and older single-player saves, legacy `AsaSavegameToolkit`-style `dataSize + position + typeRef + byte` body) and **v14+** (current production ASA, marker-based body). Both are parsed by version-aware property readers; `WorldSave.version` is the source of truth.
 
+### Parse diagnostics (logging)
+
+The parser logs through the standard `logging` module on the `arkparser.*` logger hierarchy. At DEBUG level it reports recoverable parse anomalies, for example ASE objects whose property block terminates early (the run of successfully parsed properties is kept and the remaining bytes are preserved on `GameObject.extra_data`):
+
+```python
+import logging
+logging.getLogger("arkparser").setLevel(logging.DEBUG)
+```
+
 ### Known limitation: ASA cryopod property blocks are partially decoded
 
 ASA cryopods (`PrimalItem_WeaponEmptyCryopod_C`, `SoulTrap`, `Vivarium`, `DinoBall`) store the embedded creature snapshot inside the item's `CustomItemDatas.CustomDataBytes.ByteArrays[0]` as a **zlib + custom-RLE compressed `AsaDataStore` blob**. The parser surfaces the snapshot via the simpler `CustomDataStrings` / `CustomDataFloats` accessors, exposing **species, tamed name, level, color regions, and `CurrentStatusValues[0..11]`** on each cryopodded creature.

@@ -5,6 +5,46 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.7.1]
+
+Hardening round from a full-codebase parsing review (ASE + ASA). No output or
+schema changes; the golden suite (17 maps) is byte-identical before and after.
+
+### Changed
+
+- Cryopod/creature-storage class-name patterns (`Cryopod`, `SoulTrap`,
+  `Vivarium`, `DinoBall`) consolidated into a single source of truth,
+  `arkparser.common.types.CRYOPOD_CLASS_PATTERNS`. Previously three hand-kept
+  copies (world-save iteration, export inventory filtering,
+  `UploadedItem.is_cryopod`) could silently drift.
+- The indexed-property walks in tribe export (`MembersPlayerDataID`,
+  `TribeAlliances`, `TribeLog`) now use statically bounded loops
+  (`_MAX_TRIBE_MEMBERS`) instead of unbounded `while True`.
+- Import-time asserts guard the hand-maintained stat-order tuples in
+  `export.py` against drifting out of sync with `_STAT_NAMES`.
+
+### Added
+
+- DEBUG-level log line when an ASE object's property block terminates early
+  and the remainder is preserved as `extra_data` (previously silent), showing
+  the class name, the number of properties kept, and the original error.
+
+## [0.7.0]
+
+### Added
+
+- **Live player coordinates on profile-built `ASV_Players` records**: profile
+  records now join `PlayerDataID == LinkedPlayerDataID` against the world
+  save's in-world player pawns, so online players get real `lat`/`lon`/`ccc`
+  from the pawn's location instead of always exporting 0/0. Players with no
+  in-world body (logged out, dead with corpse cleared) correctly stay at zero.
+  Legacy `ASVExport.exe` never had these coords at all.
+
+### Changed
+
+- `tests/golden/*.json` manifests are no longer tracked in git (derived
+  fingerprints; regenerate locally with `references/scripts/gen_golden.py`).
+
 ## [0.6.0]
 
 Chunked/lazy-parse round: memory-bounded parsing for large ASE saves plus the

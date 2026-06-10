@@ -15,9 +15,13 @@ from dataclasses import dataclass, field
 
 from .common.binary_reader import BinaryReader
 from .common.normalization import normalize_indexed_data, normalize_indexed_list
+from .common.types import CRYOPOD_CLASS_PATTERNS
 from .properties.registry import read_properties
 
 logger = logging.getLogger(__name__)
+
+# Uploaded items match against lowercased blueprint paths.
+_CRYOPOD_PATTERNS_LOWER: tuple[str, ...] = tuple(p.lower() for p in CRYOPOD_CLASS_PATTERNS)
 
 # Trailing UE actor spawn-instance suffix on cryopod class names, e.g.
 # "Raptor_Character_BP_C_2145673735". ARK stores the full instance name in the
@@ -820,7 +824,7 @@ class UploadedItem:
     def is_cryopod(self) -> bool:
         """Check if this item is a cryopod (or similar creature storage item)."""
         bp_lower = self.blueprint.lower()
-        return any(x in bp_lower for x in ["cryopod", "soultrap", "vivarium", "dinoball"])
+        return any(x in bp_lower for x in _CRYOPOD_PATTERNS_LOWER)
 
     @property
     def cryopod_creature(self) -> CryopodCreature | None:

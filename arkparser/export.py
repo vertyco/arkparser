@@ -44,21 +44,14 @@ from pathlib import Path
 from arkparser.common.exceptions import ArkParseError
 from arkparser.common.map_config import MapConfig
 from arkparser.common.normalization import normalize_indexed_data, normalize_indexed_list
+from arkparser.common.types import CRYOPOD_CLASS_PATTERNS
 from arkparser.data_models import CryopodCreature
 from arkparser.files import CloudInventory, Profile, Tribe
 
 logger = logging.getLogger(__name__)
 
-_CRYOPOD_CLASS_PATTERNS: tuple[str, ...] = (
-    "Cryopod",
-    "SoulTrap",
-    "Vivarium",
-    "DinoBall",
-)
-
-
 def _is_cryopod_class(class_name: str) -> bool:
-    return any(p in class_name for p in _CRYOPOD_CLASS_PATTERNS)
+    return any(p in class_name for p in CRYOPOD_CLASS_PATTERNS)
 
 
 def _decode_inventory_cryopod(item_obj: t.Any) -> CryopodCreature | None:
@@ -152,6 +145,10 @@ _LEGACY_STAT_ORDER: tuple[str, ...] = (
 )
 _EXTRA_STAT_ORDER: tuple[str, ...] = ("torp", "water", "temp", "fort")
 _FLAT_STAT_ORDER: tuple[str, ...] = _LEGACY_STAT_ORDER + _EXTRA_STAT_ORDER
+# The order tuples are hand-maintained views of _STAT_NAMES; catch drift at
+# import time before it silently misaligns exported stat JSON.
+assert len(_FLAT_STAT_ORDER) == len(_STAT_NAMES), "stat order tuples out of sync"
+assert set(_FLAT_STAT_ORDER) == set(_STAT_NAMES), "stat order tuples out of sync"
 
 
 def _prop(obj: t.Any, name: str, default: t.Any = None, index: int | None = None) -> t.Any:
@@ -2519,8 +2516,7 @@ def _tribe_from_object(
     tribe_id = _int(_prop(obj, "TribeID")) or _int(_prop(obj, "TribeId"))
     owner_id = _int(_prop(obj, "OwnerPlayerDataID")) or _int(_prop(obj, "OwnerPlayerDataId"))
     members: list[dict[str, t.Any]] = []
-    i = 0
-    while True:
+    for i in range(_MAX_TRIBE_MEMBERS):
         pid = _prop(obj, "MembersPlayerDataID", index=i)
         if pid is None:
             break
@@ -2536,15 +2532,14 @@ def _tribe_from_object(
                 "steamid": (profile.unique_id or "") if profile is not None else "",
             }
         )
-        i += 1
+    assert len(members) < _MAX_TRIBE_MEMBERS, "tribe member list exceeded bound"
     alliances: list[int] = []
-    j = 0
-    while True:
+    for j in range(_MAX_TRIBE_MEMBERS):
         val = _prop(obj, "TribeAlliances", index=j)
         if val is None:
             break
         alliances.append(_int(val))
-        j += 1
+    assert len(alliances) < _MAX_TRIBE_MEMBERS, "tribe alliance list exceeded bound"
     c = counts.get(tribe_id, {})
     data: dict[str, t.Any] = {
         "tribeid": tribe_id,
@@ -2569,14 +2564,15 @@ def _tribe_object_logs(obj: t.Any) -> list[str]:
     if isinstance(log_val, list):
         return [e for e in log_val if isinstance(e, str) and e.strip()]
     out: list[str] = []
-    k = 0
-    while True:
+    entries = 0
+    for k in range(_MAX_TRIBE_MEMBERS):
         v = _prop(obj, "TribeLog", index=k)
         if v is None:
             break
+        entries += 1
         if isinstance(v, str) and v.strip():
             out.append(v)
-        k += 1
+    assert entries < _MAX_TRIBE_MEMBERS, "tribe log list exceeded bound"
     return out
 
 

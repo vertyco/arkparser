@@ -7,6 +7,7 @@ Game objects represent creatures, items, structures, players, and other entities
 
 from __future__ import annotations
 
+import logging
 import re
 import typing as t
 from collections import defaultdict
@@ -15,6 +16,8 @@ from dataclasses import dataclass, field
 from ..common.exceptions import CorruptDataError
 from ..properties.registry import read_properties, read_property
 from .location import LocationData
+
+logger = logging.getLogger(__name__)
 
 if t.TYPE_CHECKING:
     from ..common.binary_reader import BinaryReader
@@ -420,11 +423,18 @@ class GameObject:
                     if prop is None:
                         break
                     properties.append(prop)
-            except Exception:
+            except Exception as exc:
                 self.properties = properties
                 self._props_loaded = True
                 if next_object is None:
                     raise
+                logger.debug(
+                    "property parse stopped early for %s after %d properties, "
+                    "remainder kept as extra_data: %s",
+                    self.class_name,
+                    len(properties),
+                    exc,
+                )
 
                 next_offset = properties_block_offset + next_object.properties_offset
                 remaining = next_offset - reader.position
