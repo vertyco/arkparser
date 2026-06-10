@@ -34,6 +34,7 @@ from uuid import UUID
 from ..common.binary_reader import BinaryReader, guid_str_le
 from ..common.exceptions import ArkParseError, CorruptDataError
 from ..common.normalization import normalize_indexed_data, normalize_indexed_list
+from ..common.types import CRYOPOD_CLASS_PATTERNS
 from ..data_models import CryopodCreature
 from ..game_objects.container import GameObjectContainer
 from ..game_objects.game_object import MAX_OBJECT_COUNT, GameObject
@@ -428,13 +429,10 @@ class WorldSave:
         """Return creature nest objects (wyvern, drake, etc.)."""
         return self.container.get_nests()
 
-    # Class-name fragments that indicate a creature-storage item. Mirrors
-    # data_models.UploadedItem.is_cryopod (which matches against blueprint
-    # paths); the in-world version matches against the GameObject's
-    # ``class_name`` directly.
-    _CRYOPOD_PATTERNS: t.ClassVar[tuple[str, ...]] = (
-        "Cryopod", "SoulTrap", "Vivarium", "DinoBall",
-    )
+    # Shared with data_models.UploadedItem.is_cryopod (blueprint paths) and
+    # the export inventory filter; the in-world version matches against the
+    # GameObject's ``class_name`` directly.
+    _CRYOPOD_PATTERNS: t.ClassVar[tuple[str, ...]] = CRYOPOD_CLASS_PATTERNS
 
     def iter_cryopod_creatures(self) -> t.Iterator[tuple[GameObject, CryopodCreature]]:
         """Yield ``(item_obj, CryopodCreature)`` for every *filled* cryopod

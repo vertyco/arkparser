@@ -21,6 +21,17 @@ from dataclasses import dataclass
 # The "None" name is used as a terminator in property lists
 NAME_NONE = "None"
 
+# Class-name / blueprint fragments that mark a creature-storage item.
+# Single source of truth for cryopod detection: in-world iteration
+# (WorldSave.iter_cryopod_creatures), inventory filtering (export), and
+# uploaded-item checks (UploadedItem.is_cryopod) all match against this.
+CRYOPOD_CLASS_PATTERNS: tuple[str, ...] = (
+    "Cryopod",
+    "SoulTrap",
+    "Vivarium",
+    "DinoBall",
+)
+
 
 # =============================================================================
 # ArkName (FName)
