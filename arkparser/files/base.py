@@ -196,6 +196,12 @@ class ArkFile(ABC):
         - names_count (int32) - number of name strings to read
         - Names array (names_count strings)
         - Padding (20 bytes): 12 zeros + Int32 properties_offset + 4 zeros
+
+        Preconditions: reader is positioned at the first byte of this header.
+        Postconditions: reader is positioned at the first byte of the *next*
+        object's header; the returned object carries an absolute
+        ``properties_offset``. Nothing between headers is consumed, so headers
+        stay walkable regardless of GUID content.
         """
         if is_asa:
             obj = GameObject(id=obj_id)
@@ -220,18 +226,17 @@ class ArkFile(ABC):
 
             # Read padding/metadata after names:
             # Layout: 12 zero bytes + int32 properties_offset + 4 zero bytes = 20 bytes
-            # The stored properties_offset for v7 points to one byte before the actual
-            # properties start. That byte is a 0x00 terminator in most single-object
-            # files; in multi-object files, that byte is the first byte of the next
-            # object's GUID (non-zero). Either way, actual properties = stored + 1 for v7.
-            # For v6, the stored offset IS the exact properties start (no +1 needed).
+            # The header is fixed-width, so the next object's header begins exactly
+            # here and properties are reached by absolute seek (see
+            # GameObject.load_properties). Never sniff the upcoming byte to decide
+            # whether to advance: for every object but the last that byte is the first
+            # byte of the next object's GUID, which is 0x00 for ~1 in 256 profiles.
             reader.skip(12)  # 12 padding zeros
             stored_props_offset = reader.read_int32()  # stored absolute file offset
             reader.skip(4)  # 4 trailing zeros
-            # Consume the optional 0x00 terminator byte if present (most v7 single-obj files)
-            if version >= 7 and reader.remaining > 0 and reader.peek_bytes(1)[0] == 0x00:
-                reader.skip(1)
 
+            # v7 stores the offset of the 0x00 byte that terminates the header block;
+            # properties begin one byte later. v6 stores the exact properties start.
             obj.properties_offset = stored_props_offset + (1 if version >= 7 else 0)
 
             return obj

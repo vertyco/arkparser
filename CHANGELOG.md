@@ -5,6 +5,33 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.7.3]
+
+### Fixed
+
+- ASA player profiles no longer fail to parse, recovering ~12% of the live PvE
+  playerbase (259 of 2207 profiles across the cluster). A profile that failed to
+  parse was skipped by consumers, leaving the player as a tribe-file stub with a
+  blank EOS id, so nothing that matches on that id could see them.
+  - The ASA object header consumed the byte after itself whenever it was `0x00`,
+    treating it as a terminator. For every object but the last that byte is the
+    first byte of the *next* object's GUID, so roughly 1 profile in 256 drifted a
+    byte and died reading a garbage string length. The header block is
+    fixed-width and properties are reached by absolute seek, so nothing between
+    headers is consumed now.
+  - `EnumProperty` (Unreal's scoped enum, as carried by the Dragon Horn's
+    `LinkState`) had no reader, so any player holding one lost their whole
+    profile. It is now parsed and exported as a scalar enum value such as
+    `EDragonHornLinkState::Live`. Its body matches an enum-form `ByteProperty`
+    plus a nested tag naming the underlying storage type. The ASE and worldsave
+    layouts are unverified (`EnumProperty` appears in no ASE fixture and no ASA
+    worldsave name table) and raise rather than risk desyncing the stream.
+
+### Added
+
+- `EnumProperty` is exported from `arkparser.properties`. It subclasses
+  `ByteProperty`, so existing `isinstance` checks keep working.
+
 ## [0.7.2]
 
 ### Fixed

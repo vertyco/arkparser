@@ -13,6 +13,7 @@ from __future__ import annotations
 import typing as t
 from dataclasses import dataclass
 
+from ..common.exceptions import ArkParseError
 from .base import Property, PropertyHeader, read_name
 
 if t.TYPE_CHECKING:
@@ -265,3 +266,81 @@ class ByteProperty(Property):
                     enum_name=enum_name,
                     _enum_value=enum_value,
                 )
+
+
+class EnumProperty(ByteProperty):
+    """Unreal scoped-enum property, e.g. a Dragon Horn's ``LinkState``.
+
+    Unreal emits ByteProperty for the legacy ``TEnumAsByte`` and EnumProperty for
+    an ``enum class``. The body is an enum-form ByteProperty's plus a nested tag
+    naming the underlying storage type, so it needs its own reader.
+
+    Kept a distinct type rather than a registry alias because ``type_name`` is
+    load-bearing: GameObject forces ByteProperty groups to keep indexed dict form
+    for stat arrays, while a scoped enum is scalar and should collapse to a bare
+    value. ``__slots__ = ()`` keeps this free per instance.
+    """
+
+    __slots__ = ()
+
+    @property
+    def type_name(self) -> str:
+        return "EnumProperty"
+
+    @classmethod
+    def read(
+        cls,
+        reader: BinaryReader,
+        header: PropertyHeader,
+        is_asa: bool = False,
+        name_table: list[str] | None = None,  # noqa: ARG003 - unused; ASA enums are string-based
+        worldsave_format: bool = False,
+    ) -> EnumProperty:
+        """Read an EnumProperty body (ASA string-based files only).
+
+        Layout, verified byte-exactly against live ASA profiles::
+
+            enum_type_name  (header.position bytes, null-terminated)
+            extra1          (int32, observed 1)
+            blueprint_path  (string, e.g. "/Script/ShooterGame")
+            zeros           (int32)
+            underlying_type (string, e.g. "ByteProperty")   <- absent on ByteProperty
+            zeros2          (int32)                          <- absent on ByteProperty
+            data_size       (int32, counts the enum_value field)
+            flag            (uint8, bit 0 -> an array index follows)
+            enum_value      (string, e.g. "EDragonHornLinkState::Live")
+
+        Preconditions: ``header.position`` is the enum type name's length, which
+        is always > 1 because a scoped enum always names its type.
+        Postconditions: reader sits on the next property header.
+        Failure modes: raises ArkParseError on the ASE and worldsave paths, whose
+        layouts are unverified - EnumProperty appears in no ASE fixture and in no
+        ASA worldsave name table, so guessing a layout there would risk silently
+        desyncing the stream instead of failing loudly.
+        """
+        if worldsave_format or not is_asa:
+            raise ArkParseError(
+                f"EnumProperty {header.name!r} in an "
+                f"{'ASA worldsave' if worldsave_format else 'ASE'} stream: layout unverified. "
+                "Capture the save and confirm the byte layout before enabling this path."
+            )
+        assert header.position > 1, f"EnumProperty {header.name!r} must name its enum type"
+
+        enum_name = reader.read_bytes(header.position)[:-1].decode("latin-1")
+        _extra1 = reader.read_int32()
+        _blueprint_path = reader.read_string()
+        _zeros = reader.read_int32()
+        _underlying_type = reader.read_string()
+        _zeros2 = reader.read_int32()
+        _data_size = reader.read_int32()
+        flag = reader.read_uint8()
+        array_index = reader.read_int32() if flag & 0x01 else 0
+        enum_value = reader.read_string()
+
+        assert enum_value, f"EnumProperty {header.name!r} produced an empty value"
+        return cls(
+            name=header.name,
+            index=array_index,
+            enum_name=enum_name,
+            _enum_value=enum_value,
+        )

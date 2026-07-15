@@ -15,7 +15,7 @@ from ..common.exceptions import ArkParseError, UnknownPropertyError
 from ..structs import registry as struct_registry
 from . import compound as compound_properties
 from .base import NameTable, Property, PropertyHeader, read_property_header
-from .byte_property import ByteProperty
+from .byte_property import ByteProperty, EnumProperty
 from .compound import ArrayProperty, MapProperty, StructProperty
 from .primitives import (
     BoolProperty,
@@ -51,6 +51,7 @@ _NEEDS_NAME_TABLE: frozenset[str] = frozenset({
     "StructProperty",
     "MapProperty",
     "ByteProperty",
+    "EnumProperty",
     "NameProperty",
     "ObjectProperty",
 })
@@ -78,6 +79,8 @@ PROPERTY_REGISTRY: dict[str, type[Property]] = {
     "SoftObjectProperty": SoftObjectProperty,
     # Byte (can be raw or enum)
     "ByteProperty": ByteProperty,
+    # Scoped enum - same wire layout as an enum-form ByteProperty
+    "EnumProperty": EnumProperty,
     # Compound types
     "ArrayProperty": ArrayProperty,
     "StructProperty": StructProperty,
