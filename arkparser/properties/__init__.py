@@ -16,7 +16,7 @@ Usage:
 """
 
 from .base import Property, PropertyHeader, read_property_header
-from .byte_property import ByteProperty
+from .byte_property import ByteProperty, EnumProperty
 from .compound import ArrayProperty, MapProperty, StructProperty
 from .primitives import (
     BoolProperty,
@@ -64,6 +64,7 @@ __all__ = [
     "SoftObjectProperty",
     # Byte
     "ByteProperty",
+    "EnumProperty",
     # Compound
     "ArrayProperty",
     "StructProperty",
