@@ -19,7 +19,11 @@ with ``cryo=True``. Two regressions tested here:
 
 from __future__ import annotations
 
+import typing as t
+
 from arkparser.data_models import CryopodCreature
+from arkparser.export import export_tamed
+from arkparser.game_objects.location import LocationData
 
 
 def _asa_blob(current: list[float], max_: list[float]) -> dict[str, object]:
@@ -95,6 +99,78 @@ def test_asa_cryopod_display_name_parses_level_and_species() -> None:
     assert cryo.level == 259
     # Species comes from strings[9] when present, falling back to display parse
     assert cryo.species == "Argentavis"
+
+
+class FakeObject:
+    """Minimal GameObject stand-in for exporter graph tests."""
+
+    def __init__(
+        self,
+        obj_id: int,
+        class_name: str,
+        props: dict[str, t.Any] | None = None,
+        location: LocationData | None = None,
+        is_item: bool = False,
+    ) -> None:
+        self.id = obj_id
+        self.guid = ""
+        self.names: list[str] = []
+        self.class_name = class_name
+        self.location = location
+        self.is_item = is_item
+        self.properties: list[t.Any] = []
+        self.components: dict[str, t.Any] = {}
+        self.props = props or {}
+
+    def get_property_value(self, name: str, default: t.Any = None, index: int | None = None) -> t.Any:
+        key = name if not index else f"{name}_{index}"
+        val = self.props.get(key)
+        return default if val is None else val
+
+
+class FakeSave:
+    """Save stand-in exposing just what export_tamed needs."""
+
+    is_asa = True
+
+    def __init__(self, objects: list[FakeObject], cryos: list[tuple[FakeObject, CryopodCreature]]) -> None:
+        self.objects = objects
+        self.cryos = cryos
+
+    def get_tamed_creatures(self) -> list[FakeObject]:
+        return []
+
+    def iter_cryopod_creatures(self) -> t.Iterator[tuple[FakeObject, CryopodCreature]]:
+        yield from self.cryos
+
+
+def test_cryopod_inherits_owning_container_location() -> None:
+    """ASA cryopod items live in inventories, not the world: they carry no
+    actor transform, so ``item_obj.location`` is None. The exported record
+    must fall back to the owning container's (cryofridge / pawn) location
+    instead of emitting 0/0/0."""
+    fridge = FakeObject(
+        10,
+        "CryoFridge_C",
+        props={
+            "MyInventoryComponent": (None, 11),
+            "TargetingTeam": 1500000001,
+            "TribeName": "Frisky Dingo",
+        },
+        location=LocationData(x=10000.0, y=-20000.0, z=300.0),
+    )
+    inventory = FakeObject(11, "PrimalInventoryBP_C", props={"InventoryItems": [(None, 12)]})
+    pod = FakeObject(12, "PrimalItem_WeaponEmptyCryopod_C", is_item=True)
+    cryo = CryopodCreature.from_asa_cryopod_data(_asa_blob([0.0] * 11, [0.0] * 11))
+    assert cryo is not None
+    save = FakeSave([fridge, inventory, pod], [(pod, cryo)])
+
+    records = export_tamed(save, None)
+    assert len(records) == 1
+    record = records[0]
+    assert record["cryo"] is True
+    assert record["tribe"] == "Frisky Dingo"
+    assert record["ccc"] == "10000.0 -20000.0 300.0"
 
 
 def test_ase_cryopod_keeps_twelve_stat_layout() -> None:
