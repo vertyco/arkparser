@@ -1568,7 +1568,7 @@ def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.
         actor_infos = container._inv_actor_info.items()
     else:
         actor_infos = _iter_inv_actor_info(save)
-    for _actor_id, (inv_ref, team_raw, tribe_raw, owner_raw) in actor_infos:
+    for actor_id, (inv_ref, team_raw, tribe_raw, owner_raw) in actor_infos:
         inv = _resolve(inv_ref, lookup)
         if inv is None:
             continue
@@ -1576,9 +1576,11 @@ def _build_item_owner_lookup(save: t.Any, lookup: dict[t.Any, t.Any]) -> dict[t.
         refs = _prop(inv, "InventoryItems")
         if not isinstance(refs, list) or not refs:
             continue
+        owner_obj = lookup.get(actor_id) if actor_id is not None else None
         info = {
             "TargetingTeam": _int(team_raw),
             "TribeName": _str(tribe_raw) or _str(owner_raw),
+            "OwnerLocation": getattr(owner_obj, "location", None),
         }
         for ref in refs:
             item_obj = _resolve(ref, lookup)
@@ -1667,7 +1669,14 @@ def _export_world_cryopods(
             summaries[item_id] = _cryo_summary(cryo)
         owner_info = owner_lookup.get(item_id) if item_id is not None else None
         if owner_info is not None:
+            # Pods stored in inventories carry no actor transform of their
+            # own (always the case on ASA); inherit the owning container's
+            # location so GPS fields don't collapse to 0/0/0.
+            if actor.location is None:
+                actor.location = owner_info.get("OwnerLocation")
             for key, val in owner_info.items():
+                if key == "OwnerLocation":
+                    continue
                 if val and not cryo.creature_props.get(key):
                     cryo.creature_props[key] = val
         record = _tamed_dict(actor, status, empty_lookup, map_config, save, stored=True)

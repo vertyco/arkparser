@@ -5,6 +5,18 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.7.2]
+
+### Fixed
+
+- Cryopod-embedded creatures stored inside container inventories (cryofridges,
+  vaults, pawns) no longer export with `0/0/0` coordinates. Inventory items
+  carry no actor transform of their own (always the case on ASA), so the
+  exported `ASV_Tamed` record now inherits the owning container's world
+  location for its GPS/ccc fields. On the live TheCenter ASA reference save
+  this populated coordinates for 16,966 of 17,102 cryo records that previously
+  exported as `0/0/0`.
+
 ## [0.7.1]
 
 Hardening round from a full-codebase parsing review (ASE + ASA). No output or
