@@ -2699,12 +2699,18 @@ def _allocate_profiles(
     profiles: list[Profile],
     file_tribe_ids: set[int],
     member_index: dict[int, int],
+    tribe_members: dict[int, set[int]],
 ) -> tuple[dict[int, int], dict[int, list[int]]]:
     """Allocate each profile to one tribe id (ContentContainer.cs:760-790).
 
-    Priority: explicit profile tribe id when it names an existing tribe ->
-    the tribe whose member list contains the player -> a solo tribe keyed on
-    the player id. Returns ``(player_id -> tribe_id, tribe_id -> [player_id])``.
+    Priority: explicit profile tribe id when it names an existing tribe AND
+    that tribe's member roster still lists the player -> the tribe whose
+    member list contains the player -> a solo tribe keyed on the player id.
+    The roster check diverges from live legacy on purpose: the game leaves
+    ``TribeID`` stale in the profile of a member removed while offline, and
+    honoring it unconditionally re-attaches ex-members (rosters then exceed
+    the server tribe cap). The ``.arktribe`` member list is authoritative.
+    Returns ``(player_id -> tribe_id, tribe_id -> [player_id])``.
     """
     profile_tribeid: dict[int, int] = {}
     players_by_tribe: dict[int, list[int]] = {}
@@ -2713,7 +2719,7 @@ def _allocate_profiles(
         if not pid:
             continue
         explicit = _int(prof.raw_tribe_id)
-        if explicit and explicit in file_tribe_ids:
+        if explicit and explicit in file_tribe_ids and pid in tribe_members.get(explicit, ()):
             target = explicit
         elif pid in member_index:
             target = member_index[pid]
@@ -2754,6 +2760,7 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
     logs: dict[int, list[str]] = {}
     member_index: dict[int, int] = {}
     member_name: dict[int, str] = {}
+    tribe_members: dict[int, set[int]] = {}
     order: list[int] = []
     for sid, sname in (
         (_UNCLAIMED_TRIBE_ID, "[ASV Unclaimed]"),
@@ -2773,12 +2780,15 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
         logs[tid] = log_entries
         for pid, mname in members:
             member_index.setdefault(pid, tid)
+            tribe_members.setdefault(tid, set()).add(pid)
             if mname:
                 member_name.setdefault(pid, mname)
     file_tribe_ids = set(rich) | {_UNCLAIMED_TRIBE_ID, _ABANDONED_TRIBE_ID}
     profiles = _profile_entries(save)
     profile_active = _profile_actives(profiles, save)
-    profile_tribeid, players_by_tribe = _allocate_profiles(profiles, file_tribe_ids, member_index)
+    profile_tribeid, players_by_tribe = _allocate_profiles(
+        profiles, file_tribe_ids, member_index, tribe_members
+    )
     for prof in profiles:
         pid = _int(prof.player_id)
         target = profile_tribeid.get(pid)

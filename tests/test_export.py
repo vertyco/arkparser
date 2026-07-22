@@ -3,6 +3,7 @@
 import datetime as dt
 import os
 import shutil
+import typing as t
 from pathlib import Path
 
 import pytest
@@ -155,6 +156,39 @@ def test_export_tribes_active_never_future() -> None:
     exported = export_tribes(holder)
     rec = next(r for r in exported if r["tribeid"] == profile.player_id)
     assert rec["active"] is None
+
+
+def test_allocate_profiles_ignores_stale_profile_tribe_id() -> None:
+    """A profile whose TribeID names a tribe that no longer lists the player
+    in its member roster must NOT be allocated to that tribe (the game leaves
+    TribeID stale in profiles of members removed while offline). It falls
+    through to a solo tribe keyed on the player id."""
+    from arkparser.export import _allocate_profiles
+
+    current = t.cast(Profile, type("P", (), {"player_id": 1, "raw_tribe_id": 555})())
+    stale = t.cast(Profile, type("P", (), {"player_id": 987, "raw_tribe_id": 555})())
+    member_index = {1: 555, 2: 555}
+    tribe_members = {555: {1, 2}}
+    profile_tribeid, players_by_tribe = _allocate_profiles(
+        [current, stale], {555}, member_index, tribe_members
+    )
+    assert profile_tribeid[1] == 555
+    assert profile_tribeid[987] == 987
+    assert players_by_tribe[555] == [1]
+    assert players_by_tribe[987] == [987]
+
+
+def test_allocate_profiles_member_list_still_wins_without_explicit_id() -> None:
+    """A profile with no usable TribeID but present in a tribe's roster is
+    still allocated to that tribe via the member-list fallback."""
+    from arkparser.export import _allocate_profiles
+
+    prof = t.cast(Profile, type("P", (), {"player_id": 2, "raw_tribe_id": 0})())
+    profile_tribeid, players_by_tribe = _allocate_profiles(
+        [prof], {555}, {2: 555}, {555: {2}}
+    )
+    assert profile_tribeid[2] == 555
+    assert players_by_tribe[555] == [2]
 
 
 def test_export_tribe_logs_uses_tribe_parser(ase_tribe_path: Path) -> None:
