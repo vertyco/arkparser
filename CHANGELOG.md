@@ -5,6 +5,14 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.7.5]
+
+### Fixed
+
+- `arkparser.__version__` now matches the package version (it was stuck at
+  0.7.3; the 0.7.4 wheel shipped correct code with a stale dunder). No code
+  changes beyond the version string.
+
 ## [0.7.4]
 
 ### Fixed
