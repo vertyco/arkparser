@@ -5,6 +5,21 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.7.4]
+
+### Fixed
+
+- Tribe rosters no longer exceed the server tribe member cap. The game leaves
+  `TribeID` stale in the `.arkprofile` of a member removed while offline, and
+  profile allocation honored that id unconditionally (mirroring live legacy
+  `ContentContainer.cs:763`), gluing ex-members back onto the tribe's exported
+  `members`/`players`. A profile's tribe id now counts only when the tribe's
+  `.arktribe` member roster still lists the player; otherwise the player falls
+  through to the member-list lookup and then a solo tribe, matching what the
+  game shows in the tribe UI. Verified against live PvP saves: all six
+  over-cap tribes were stale-profile artifacts; every raw roster was within
+  the cap.
+
 ## [0.7.3]
 
 ### Fixed
