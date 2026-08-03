@@ -2464,22 +2464,32 @@ def _tribe_active_iso(
     return max(past).isoformat()
 
 
-def _profile_actives(profiles: list[Profile], save: t.Any) -> dict[int, dt.datetime]:
-    """``player_id -> last-active datetime`` for tribe activity rollups.
+def _profile_actives(
+    profiles: list[Profile], save: t.Any
+) -> tuple[dict[int, dt.datetime], dict[int, float]]:
+    """Per-player last-login maps for tribe activity rollups.
 
-    Mirrors legacy ContentPlayer.LastActiveDateTime: the profile's
-    LastLoginTime converted through the save anchor.
+    Returns ``(anchored, raw)``: ``anchored`` is ``player_id -> LastLoginTime``
+    converted through the save anchor (legacy ContentPlayer.LastActiveDateTime,
+    inherits .ark mtime error); ``raw`` is ``player_id -> LastLoginTime`` as
+    in-game seconds, untouched by any filesystem state. One pass over
+    ``profiles`` fills both.
     """
     assert isinstance(profiles, list), "profiles must be a list"
-    out: dict[int, dt.datetime] = {}
+    anchored: dict[int, dt.datetime] = {}
+    raw: dict[int, float] = {}
     for prof in profiles:
         pid = _int(prof.player_id)
         if not pid:
             continue
+        login = _float(prof.last_login_time)
+        if login > 0:
+            raw[pid] = login
         active = _approx_real_datetime(prof.last_login_time, save)
         if active is not None:
-            out[pid] = active
-    return out
+            anchored[pid] = active
+    assert len(anchored) <= len(profiles) and len(raw) <= len(profiles), "rollup maps exceed input"
+    return anchored, raw
 
 
 def _build_profile_index(save: t.Any) -> dict[int, Profile]:
@@ -2785,7 +2795,7 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
                 member_name.setdefault(pid, mname)
     file_tribe_ids = set(rich) | {_UNCLAIMED_TRIBE_ID, _ABANDONED_TRIBE_ID}
     profiles = _profile_entries(save)
-    profile_active = _profile_actives(profiles, save)
+    profile_active, profile_login_raw = _profile_actives(profiles, save)
     profile_tribeid, players_by_tribe = _allocate_profiles(
         profiles, file_tribe_ids, member_index, tribe_members
     )
@@ -2814,6 +2824,8 @@ def _assemble_tribes(save: t.Any) -> dict[str, t.Any]:
         "counts": counts,
         "profile_index": profile_index,
         "profile_active": profile_active,
+        "profile_login_raw": profile_login_raw,
+        "game_time": _float(getattr(save, "game_time", 0.0)),
         "players_by_tribe": players_by_tribe,
         "profile_tribeid": profile_tribeid,
         "member_stubs": member_stubs,

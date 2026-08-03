@@ -209,3 +209,20 @@ def test_export_to_files_uses_asv_names(
 ) -> None:
     created = export_to_files(ase_export_world_save, tmp_path)
     assert {path.name for path in created} == {f"{name}.json" for name in _ASV_NAMES}
+
+
+def test_profile_actives_returns_anchored_and_raw_maps() -> None:
+    """_profile_actives yields both the anchored datetime map (legacy) and a
+    raw LastLoginTime seconds map keyed by player id."""
+    from arkparser.export import _profile_actives
+
+    profile = _profile_with_last_login()
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    now = dt.datetime.now(tz=local_tz)
+    game_time = float(profile.last_login_time) + 3_600.0
+    holder = type("Holder", (), {"file_mtime": now, "game_time": game_time})()
+    anchored, raw = _profile_actives([profile], holder)
+    pid = int(profile.player_id)
+    assert pid in anchored and pid in raw
+    assert raw[pid] == pytest.approx(float(profile.last_login_time))
+    assert isinstance(anchored[pid], dt.datetime)
