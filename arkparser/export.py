@@ -326,6 +326,18 @@ LEGACY_TRIBE_KEYS: frozenset[str] = frozenset(
         "dataFile",
     }
 )
+# Tribe-record keys that must always emit, even when null/zero. The three
+# last_member_login fields have "null means cannot tell" semantics and a real
+# zero value (login within the final in-game second before the snapshot), so
+# _compact must never prune them. Not part of LEGACY_TRIBE_KEYS: that set
+# names the ASVExport parity contract and stays legacy-only.
+TRIBE_KEEP_KEYS: frozenset[str] = LEGACY_TRIBE_KEYS | frozenset(
+    {
+        "last_member_login",
+        "last_member_login_player_id",
+        "last_member_login_game_seconds",
+    }
+)
 LEGACY_STRUCT_KEYS: frozenset[str] = frozenset(
     {
         "id",
@@ -2436,34 +2448,6 @@ def _tribe_file_date(tribe: t.Any, save: t.Any) -> dt.datetime | None:
     return getattr(save, "file_mtime", None) if save is not None else None
 
 
-def _tribe_active_iso(
-    file_date: t.Any,
-    member_ids: t.Iterable[int],
-    profile_active: dict[int, dt.datetime],
-) -> str | None:
-    """Legacy ContentTribe.LastActive (ContentTribe.cs:35-49): the max of the
-    tribe file date and the members' last-active datetimes, discarding values
-    in the future. Tribe-log "Day N" stamps are game-calendar time, not real
-    seconds, so they cannot be converted with the save anchor and are unused.
-
-    Returns ``None`` when no past candidate exists.
-    """
-    assert isinstance(profile_active, dict), "profile_active must be a dict"
-    candidates: list[dt.datetime] = []
-    if isinstance(file_date, dt.datetime):
-        candidates.append(file_date if file_date.tzinfo else file_date.astimezone())
-    for i, pid in enumerate(member_ids):
-        assert i < _MAX_TRIBE_MEMBERS, "tribe member list exceeded bound"
-        active = profile_active.get(_int(pid))
-        if active is not None:
-            candidates.append(active if active.tzinfo else active.astimezone())
-    now = dt.datetime.now(dt.timezone.utc)
-    past = [c for c in candidates if c <= now]
-    if not past:
-        return None
-    return max(past).isoformat()
-
-
 def _tribe_last_login(
     member_ids: t.Iterable[int],
     profile_active: dict[int, dt.datetime],
@@ -2931,18 +2915,26 @@ def _tribe_record(tid: int, a: dict[str, t.Any]) -> dict[str, t.Any]:
 
     File-backed tribes reuse the rich record (dataFile/owner/alliances) but
     have ``players``/``members`` overridden to the allocated-player set so
-    they match the legacy writer (which counts allocated profiles, not the raw
-    member list). Synthesized stubs carry id + name + world-derived counts.
-    ``active`` finalizes here for both shapes: max of the tribe file date and
-    the allocated members' last-active times (legacy ContentTribe.LastActive).
+    they match the legacy writer. ``active`` is the anchored last member
+    login when one exists, else the tribe file date (spec D1-b; deliberate
+    deviation from legacy ContentTribe.LastActive, which was the file mtime
+    on every file-backed tribe). The three ``last_member_login*`` fields are
+    the mtime-immune signal and always emit, null meaning "cannot tell".
     """
+    assert isinstance(a, dict), "assembled tribes must be a dict"
     players = a["players_by_tribe"].get(tid, [])
+    iso, login_pid, game_seconds = _tribe_last_login(
+        players, a["profile_active"], a["profile_login_raw"], a["game_time"]
+    )
     base = a["rich"].get(tid)
     if base is not None:
         rec = dict(base)
         rec["players"] = len(players)
         rec["members"] = _members_for(tid, a)
-        rec["active"] = _tribe_active_iso(rec.get("active"), players, a["profile_active"])
+        rec["active"] = iso if iso is not None else _file_date_iso(rec.get("active"))
+        rec["last_member_login"] = iso
+        rec["last_member_login_player_id"] = login_pid
+        rec["last_member_login_game_seconds"] = game_seconds
         return rec
     c = a["counts"].get(tid, {})
     data: dict[str, t.Any] = {
@@ -2953,10 +2945,13 @@ def _tribe_record(tid: int, a: dict[str, t.Any]) -> dict[str, t.Any]:
         "tames": c.get("tames", 0),
         "uploadedTames": 0,
         "structures": c.get("structures", 0),
-        "active": _tribe_active_iso(None, players, a["profile_active"]),
+        "active": iso,
         "dataFile": "",
+        "last_member_login": iso,
+        "last_member_login_player_id": login_pid,
+        "last_member_login_game_seconds": game_seconds,
     }
-    return _compact(data, LEGACY_TRIBE_KEYS)
+    return _compact(data, TRIBE_KEEP_KEYS)
 
 
 def export_tribes(save: t.Any) -> list[dict[str, t.Any]]:

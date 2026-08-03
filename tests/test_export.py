@@ -99,11 +99,10 @@ def test_export_tribes_uses_tribe_parser(ase_tribe_path: Path) -> None:
     assert exported[0]["players"] == tribe.member_count
 
 
-def test_export_tribes_active_is_file_mtime(tmp_path: Path) -> None:
-    """Tribe ``active`` mirrors legacy ContentTribe.LastActive: the .arktribe
-    file's write time, never a value derived from in-game log day numbers
-    (those use the game calendar, not real seconds, and produced far-future
-    dates)."""
+def test_export_tribes_active_falls_back_to_file_mtime(tmp_path: Path) -> None:
+    """With no member login data, ``active`` falls back to the .arktribe
+    file's write time (D1-b: login wins when present, file date otherwise).
+    The last_member_login fields stay null and are still emitted."""
     tribe_path = _first_dump_file("*.arktribe")
     copy = tmp_path / tribe_path.name
     shutil.copy2(tribe_path, copy)
@@ -118,7 +117,9 @@ def test_export_tribes_active_is_file_mtime(tmp_path: Path) -> None:
     assert rec["active"] is not None
     active = dt.datetime.fromisoformat(rec["active"])
     assert active.timestamp() == pytest.approx(stamp.timestamp(), abs=2)
-    assert active <= now
+    assert rec["last_member_login"] is None
+    assert rec["last_member_login_player_id"] is None
+    assert rec["last_member_login_game_seconds"] is None
 
 
 def test_export_tribes_solo_active_from_profile_last_login() -> None:
@@ -143,19 +144,24 @@ def test_export_tribes_solo_active_from_profile_last_login() -> None:
 
 
 def test_export_tribes_active_never_future() -> None:
-    """Future candidates are discarded (legacy filters d <= DateTime.Now)."""
+    """A LastLoginTime past the world's game clock is dropped on the
+    game_time rule: even with file_mtime pushed weeks into the past (so the
+    anchored candidate lands before now and the old real-domain filter would
+    keep it), the member is dropped and game_seconds never goes negative."""
     profile = _profile_with_last_login()
     local_tz = dt.datetime.now().astimezone().tzinfo
-    now = dt.datetime.now(tz=local_tz)
+    stale_mtime = dt.datetime.now(tz=local_tz) - dt.timedelta(weeks=6)
     game_time = max(float(profile.last_login_time) - 100_000_000.0, 1.0)
     holder = type(
         "Holder",
         (),
-        {"tribes": [], "profiles": [profile], "file_mtime": now, "game_time": game_time},
+        {"tribes": [], "profiles": [profile], "file_mtime": stale_mtime, "game_time": game_time},
     )()
     exported = export_tribes(holder)
     rec = next(r for r in exported if r["tribeid"] == profile.player_id)
-    assert rec["active"] is None
+    assert rec.get("active") is None
+    assert rec["last_member_login"] is None
+    assert rec["last_member_login_game_seconds"] is None
 
 
 def test_allocate_profiles_ignores_stale_profile_tribe_id() -> None:
@@ -292,3 +298,70 @@ def test_file_date_iso_past_only() -> None:
     assert _file_date_iso(future) is None
     assert _file_date_iso(None) is None
     assert _file_date_iso("2024-01-01") is None
+
+
+def test_export_tribes_last_login_ignores_world_save_mtime() -> None:
+    """The claim the feature rests on: vary save.file_mtime across two
+    exports of the same fixture; game_seconds and player_id are identical,
+    only the anchored ISO fields (last_member_login, active) move."""
+    profile = _profile_with_last_login()
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    now = dt.datetime.now(tz=local_tz)
+    game_time = float(profile.last_login_time) + 3_600.0
+
+    def _export_with_mtime(mtime: dt.datetime) -> dict[str, t.Any]:
+        holder = type(
+            "Holder",
+            (),
+            {"tribes": [], "profiles": [profile], "file_mtime": mtime, "game_time": game_time},
+        )()
+        recs = export_tribes(holder)
+        return next(r for r in recs if r["tribeid"] == profile.player_id)
+
+    a = _export_with_mtime(now)
+    b = _export_with_mtime(now - dt.timedelta(weeks=3))
+    assert a["last_member_login_game_seconds"] == b["last_member_login_game_seconds"] == 3_600
+    assert a["last_member_login_player_id"] == b["last_member_login_player_id"] == profile.player_id
+    assert a["last_member_login"] != b["last_member_login"]
+    assert a["active"] != b["active"]
+    assert isinstance(a["last_member_login_game_seconds"], int)
+    assert not isinstance(a["last_member_login_game_seconds"], bool)
+
+
+def test_export_tribes_solo_login_fields_match_active() -> None:
+    """Solo/profile-only tribe: active == last_member_login (D1-b, login
+    wins), player_id names the member, game_seconds matches the offset."""
+    profile = _profile_with_last_login()
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    now = dt.datetime.now(tz=local_tz)
+    game_time = float(profile.last_login_time) + 3_600.0
+    holder = type(
+        "Holder",
+        (),
+        {"tribes": [], "profiles": [profile], "file_mtime": now, "game_time": game_time},
+    )()
+    rec = next(r for r in export_tribes(holder) if r["tribeid"] == profile.player_id)
+    assert rec["active"] == rec["last_member_login"]
+    assert rec["last_member_login_player_id"] == profile.player_id
+    assert rec["last_member_login_game_seconds"] == 3_600
+
+
+def test_export_tribes_all_stub_tribe_login_fields_null() -> None:
+    """A tribe whose allocated players are all profile-less stubs yields null
+    login fields (never inherits a file date), and the keys still emit."""
+    tribe_path = _first_dump_file("*.arktribe")
+    tribe = Tribe.load(tribe_path)
+    if not tribe.get_members():
+        pytest.skip("fixture tribe has no members to stub")
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    now = dt.datetime.now(tz=local_tz)
+    holder = type(
+        "Holder",
+        (),
+        {"tribes": [tribe], "profiles": [], "file_mtime": now, "game_time": 5_000.0},
+    )()
+    rec = next(r for r in export_tribes(holder) if r["tribeid"] == tribe.tribe_id)
+    assert "last_member_login" in rec and rec["last_member_login"] is None
+    assert "last_member_login_player_id" in rec
+    assert "last_member_login_game_seconds" in rec
+    assert rec["last_member_login_game_seconds"] is None
