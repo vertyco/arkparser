@@ -2464,6 +2464,63 @@ def _tribe_active_iso(
     return max(past).isoformat()
 
 
+def _tribe_last_login(
+    member_ids: t.Iterable[int],
+    profile_active: dict[int, dt.datetime],
+    profile_login_raw: dict[int, float],
+    game_time: float,
+) -> tuple[str | None, int | None, int | None]:
+    """Game-domain last-login rollup over a tribe's allocated members.
+
+    Winner is the argmax of raw ``LastLoginTime`` restricted to
+    ``login <= game_time``: profiles keep saving after the world snapshot, so
+    logins can exceed the world's game clock; those are dropped, never
+    clamped. Selection and filtering both run in the game-time domain, so the
+    result never depends on any file mtime (the defect that ruins the legacy
+    ``active`` as an inactivity signal).
+
+    Returns ``(anchored_iso, player_id, game_seconds)``, all ``None`` when no
+    member passes. ``anchored_iso`` alone may be ``None`` with the other two
+    set, when the save lacks the mtime anchor. ``game_seconds`` is
+    ``int(game_time - login)``: a floored, non-negative JSON int.
+
+    Cluster profiles are out of scope by construction: nothing puts a
+    foreign-map Profile into ``save.profiles``, so every candidate here lives
+    on this map's game clock. No defensive logic needed.
+    """
+    assert isinstance(profile_login_raw, dict), "profile_login_raw must be a dict"
+    if game_time <= 0:
+        return None, None, None
+    best_pid: int | None = None
+    best_raw = float("-inf")
+    for i, pid in enumerate(member_ids):
+        assert i < _MAX_TRIBE_MEMBERS, "tribe member list exceeded bound"
+        raw = profile_login_raw.get(_int(pid))
+        if raw is None or raw > game_time or raw <= best_raw:
+            continue
+        best_pid = _int(pid)
+        best_raw = raw
+    if best_pid is None:
+        return None, None, None
+    seconds = int(game_time - best_raw)
+    assert seconds >= 0, "game_seconds must be non-negative after the future filter"
+    anchored = profile_active.get(best_pid)
+    iso = anchored.isoformat() if anchored is not None else None
+    return iso, best_pid, seconds
+
+
+def _file_date_iso(value: t.Any) -> str | None:
+    """ISO 8601 for a tribe file date, dropping future values (clock skew,
+    bad rsync). Non-datetime input yields ``None``."""
+    if not isinstance(value, dt.datetime):
+        return None
+    aware = value if value.tzinfo else value.astimezone()
+    assert aware.tzinfo is not None, "file date must be timezone-aware here"
+    now = dt.datetime.now(dt.timezone.utc)
+    assert now.tzinfo is not None, "now must be timezone-aware"
+    return aware.isoformat() if aware <= now else None
+
+
 def _profile_actives(
     profiles: list[Profile], save: t.Any
 ) -> tuple[dict[int, dt.datetime], dict[int, float]]:

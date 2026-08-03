@@ -226,3 +226,69 @@ def test_profile_actives_returns_anchored_and_raw_maps() -> None:
     assert pid in anchored and pid in raw
     assert raw[pid] == pytest.approx(float(profile.last_login_time))
     assert isinstance(anchored[pid], dt.datetime)
+
+
+def test_tribe_last_login_game_domain_argmax() -> None:
+    """Winner is the max raw LastLoginTime <= game_time; all three outputs
+    describe that one member; game_seconds is a non-negative int."""
+    from arkparser.export import _tribe_last_login
+
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    t1 = dt.datetime(2024, 1, 1, tzinfo=local_tz)
+    t2 = dt.datetime(2024, 6, 1, tzinfo=local_tz)
+    anchored = {1: t1, 2: t2}
+    raw = {1: 1_000.0, 2: 5_000.5}
+    iso, pid, secs = _tribe_last_login([1, 2], anchored, raw, 9_000.0)
+    assert pid == 2
+    assert iso == t2.isoformat()
+    assert secs == 3_999  # int(9000.0 - 5000.5) floors, stays int
+    assert isinstance(secs, int) and not isinstance(secs, bool)
+
+
+def test_tribe_last_login_drops_future_on_game_time_not_wall_clock() -> None:
+    """A login past the world's game clock is dropped, not clamped, even when
+    its anchored datetime lands safely in the past (stale-mtime case the
+    real-domain filter gets wrong). Never emits negative game_seconds."""
+    from arkparser.export import _tribe_last_login
+
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    long_ago = dt.datetime(2020, 1, 1, tzinfo=local_tz)
+    iso, pid, secs = _tribe_last_login([7], {7: long_ago}, {7: 10_000.0}, 9_000.0)
+    assert (iso, pid, secs) == (None, None, None)
+
+
+def test_tribe_last_login_zero_and_no_data() -> None:
+    """Login exactly at the snapshot gives game_seconds == 0 (a real value,
+    distinct from null); empty inputs and game_time <= 0 give all-None."""
+    from arkparser.export import _tribe_last_login
+
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    stamp = dt.datetime(2024, 3, 1, tzinfo=local_tz)
+    iso, pid, secs = _tribe_last_login([3], {3: stamp}, {3: 9_000.0}, 9_000.0)
+    assert (pid, secs) == (3, 0)
+    assert iso == stamp.isoformat()
+    assert _tribe_last_login([], {}, {}, 9_000.0) == (None, None, None)
+    assert _tribe_last_login([3], {3: stamp}, {3: 9_000.0}, 0.0) == (None, None, None)
+
+
+def test_tribe_last_login_iso_none_when_anchor_missing() -> None:
+    """No anchored datetime (save had no usable mtime) still yields player_id
+    and game_seconds; only the ISO is None."""
+    from arkparser.export import _tribe_last_login
+
+    iso, pid, secs = _tribe_last_login([4], {}, {4: 2_500.0}, 9_000.0)
+    assert (iso, pid, secs) == (None, 4, 6_500)
+
+
+def test_file_date_iso_past_only() -> None:
+    """_file_date_iso emits past datetimes as ISO and drops future or
+    non-datetime values."""
+    from arkparser.export import _file_date_iso
+
+    local_tz = dt.datetime.now().astimezone().tzinfo
+    past = dt.datetime.now(tz=local_tz) - dt.timedelta(days=1)
+    future = dt.datetime.now(tz=local_tz) + dt.timedelta(days=1)
+    assert _file_date_iso(past) == past.isoformat()
+    assert _file_date_iso(future) is None
+    assert _file_date_iso(None) is None
+    assert _file_date_iso("2024-01-01") is None
