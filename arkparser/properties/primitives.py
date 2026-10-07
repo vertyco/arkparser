@@ -52,6 +52,15 @@ def _read_worldsave_simple_prefix(reader: BinaryReader) -> tuple[int, int, int]:
     _padding, data_size = reader.read_int32_pair()
     flag = reader.read_uint8()
 
+    if reader.save_version == 13:
+        # v13 legacy tag (C# PropertyTag.ReadPre14): Size(4) + ArrayIndex(4)
+        # + HasPropertyGuid(1) [+ Guid(16)]. The pair above is (Size,
+        # ArrayIndex), not (padding, size), and the byte is not a flags field.
+        size, array_index = _padding, data_size
+        if flag:
+            reader.skip(16)
+        return size, 0, array_index
+
     array_index = 0
     if flag & 0x01:
         array_index = reader.read_int32()
@@ -447,11 +456,10 @@ class BoolProperty(Property):
         index = header.index
         if worldsave_format:
             if reader.save_version == 13:
-                # ASA v13 BoolProperty body: pad(4) + length(4) + value_int16(2)
-                # per AsaSavegameToolkit (ReadShort). No flag byte / arr_index
-                # variant; index always comes from the header.
-                _pad = reader.read_int32()
-                _length = reader.read_int32()
+                # ASA v13 BoolProperty body: size(4) + array_index(4) +
+                # value_int16(2) per AsaSavegameToolkit (ReadShort).
+                _size = reader.read_int32()
+                index = reader.read_int32()
                 value = reader.read_int16() != 0
             else:
                 # ASA v14+: pad(4) + length(4) + flag(1) [+ arr_index(4) if flag & 0x01]
@@ -639,7 +647,8 @@ class ObjectProperty(Property):
         if worldsave_format:
             # WorldSave format: prefix + 2 byte marker + name(8) or GUID(16)
             _data_size, _flag, index = _read_worldsave_simple_prefix(reader)
-            index = header.index
+            if reader.save_version != 13:
+                index = header.index
             marker = reader.read_uint16()
 
             if marker == 1:
