@@ -5,6 +5,24 @@ All notable changes to this project are documented here. Format loosely follows
 versioning on its **public Python API** (the output JSON schema is additive;
 legacy `ASVExport.exe` keys are frozen and never removed/renamed).
 
+## [0.8.1]
+
+### Fixed
+
+- ASA v13 worldsaves load again. Every v13 save failed with "ASA name table:
+  implausible count": the v13 SaveHeader stores the name table at the absolute
+  offset in the int32 after the version, and extra tables sit between the data
+  files and that offset, so the old sequential read landed in the wrong place.
+  The header now seeks to the offset for every version, as the C# reference
+  does (`SaveHeaderRecord.ReadPre14`). Verified on the five public v13 sample
+  saves in miragedmuk/AsaSavegameToolkit (116,933 objects, 0 parse errors).
+- ASA v13 property array indices are kept. The v13 tag is `Size + ArrayIndex +
+  HasPropertyGuid`; the index was discarded, so every static-array property
+  (`CurrentStatusValues`, `NumberOfLevelUpPointsApplied`, `ColorSetIndices`,
+  `ItemStatValues`, `BodyColors`, ...) collapsed onto index 0 and exported as
+  zeros. A set `HasPropertyGuid` byte now skips its 16-byte GUID. v14 parsing
+  is unchanged (byte-identical property dumps on all v14 samples).
+
 ## [0.7.5]
 
 ### Fixed

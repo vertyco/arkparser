@@ -251,7 +251,7 @@ class ArrayProperty(Property):
         # interprets dataSize as array_header (= massive count) and overruns.
         if reader.save_version == 13:
             data_size = reader.read_int32()
-            _position_int = reader.read_int32()
+            _position_int = reader.read_int32()  # v13 ArrayIndex
             element_type_id = reader.read_int32()
             _element_type_inst = reader.read_int32()
             element_type = name_table.get(element_type_id, f"__UNKNOWN_{element_type_id}__")
@@ -297,7 +297,7 @@ class ArrayProperty(Property):
                 reader.position = data_end
             return cls(
                 name=header.name,
-                index=header.index,
+                index=_position_int,
                 array_type=element_type,
                 _values=values,
             )
@@ -977,7 +977,7 @@ class StructProperty(Property):
         # consumes ~99 bytes of garbage and overruns the blob.
         if reader.save_version == 13:
             data_size = reader.read_int32()
-            _position_int = reader.read_int32()
+            _position_int = reader.read_int32()  # v13 ArrayIndex
             struct_type_id = reader.read_int32()
             _struct_type_inst = reader.read_int32()
             struct_type = name_table.get(struct_type_id, f"__UNKNOWN_{struct_type_id}__")
@@ -998,7 +998,7 @@ class StructProperty(Property):
                 reader.position = data_end
             return cls(
                 name=header.name,
-                index=header.index,
+                index=_position_int,
                 struct_type=struct_type,
                 _value=struct_value,
             )
@@ -1183,7 +1183,7 @@ class MapProperty(Property):
         # and consumes ~40+ extra bytes from the next property.
         if reader.save_version == 13:
             data_size = reader.read_int32()
-            _position_int = reader.read_int32()
+            _position_int = reader.read_int32()  # v13 ArrayIndex
             key_type_id = reader.read_int32()
             _key_type_inst = reader.read_int32()
             value_type_id = reader.read_int32()
@@ -1202,7 +1202,7 @@ class MapProperty(Property):
                 reader.position = data_end
             return cls(
                 name=header.name,
-                index=header.index,
+                index=_position_int,
                 key_type=key_type,
                 value_type=value_type,
                 _entries=entries,

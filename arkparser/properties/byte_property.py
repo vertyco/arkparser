@@ -118,7 +118,7 @@ class ByteProperty(Property):
                 if not (name_table and isinstance(name_table, dict)):
                     raise ValueError("v13 ByteProperty requires a name table")
                 _data_size = reader.read_int32()
-                _position_int = reader.read_int32()
+                _position_int = reader.read_int32()  # v13 ArrayIndex
                 byte_type_id = reader.read_int32()
                 _byte_type_inst = reader.read_int32()
                 byte_type = name_table.get(byte_type_id, f"__UNKNOWN_{byte_type_id}__")
@@ -127,7 +127,7 @@ class ByteProperty(Property):
                     byte_value = reader.read_uint8()
                     return cls(
                         name=header.name,
-                        index=header.index,
+                        index=_position_int,
                         enum_name="None",
                         _byte_value=byte_value,
                     )
@@ -138,7 +138,7 @@ class ByteProperty(Property):
                     enum_value = f"{enum_value}_{enum_value_inst - 1}"
                 return cls(
                     name=header.name,
-                    index=header.index,
+                    index=_position_int,
                     enum_name=byte_type,
                     _enum_value=enum_value,
                 )

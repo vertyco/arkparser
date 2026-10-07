@@ -1005,7 +1005,7 @@ class WorldSave:
         # legacy_offset and game_time; v13 saves jump straight to game_time.
         # Without this version gate we mis-align the read by 8 bytes and the
         # data_files loop walks into garbage.
-        name_table_offset = legacy_offset  # v13: table follows the parts section
+        name_table_offset = legacy_offset  # v13: the int32 after the version
         if self.version >= 14:
             _unknown1 = reader.read_int32()
             name_table_offset = reader.read_int32()  # absolute offset of name table
@@ -1021,45 +1021,29 @@ class WorldSave:
 
         # Name table (dict keyed by FName hash for ASA).
         #
-        # v14+: the engine stores the table at an explicit absolute offset
-        # (name_table_offset = the 2nd int32 after legacy_offset). The bytes
-        # between the data-files section and that offset are NOT a fixed pad
-        # pair on every map - on busy/modded saves (measured: Ragnarok +26 B,
-        # Scorched Earth +31 B past where a sequential read lands) the table
-        # would be read truncated, leaving ~half the class refs resolving to
-        # __UNKNOWN_CLASS_<hash>__. Seek to the offset like the C# reference
-        # (AsaSavegame.readNametable: ``archive.Position = nameTableOffset``).
-        # Where the gap is zero (TheIsland, Aberration, Extinction) the seek is
-        # a no-op; where it drifts it recovers every leaked class name.
-        if self.version >= 14:
-            # Explicit raise (not assert) so the bound survives ``python -O``.
-            if not 0 <= name_table_offset <= reader.size:
-                raise CorruptDataError(
-                    f"ASA name-table offset {name_table_offset} out of range "
-                    f"(blob size {reader.size})"
-                )
-            reader.position = name_table_offset
-            self.name_table = self._read_asa_name_table(reader)
-        else:
-            # v13: no explicit offset field. Retain the historical sequential
-            # read (two pad int32s, then the table) - there is no live v13
-            # fixture to validate a seek against. The idx==1 sentinel consumes
-            # the 4-byte trailer on user-placed-actor entries.
-            reader.read_int32()  # pad1
-            reader.read_int32()  # pad2
-            self.name_table = self._read_asa_name_table(reader, sentinel=True)
+        # Every version stores the table at an explicit absolute offset: v14+
+        # in the 2nd int32 after legacy_offset, v13 in legacy_offset itself.
+        # The bytes between the data-files section and that offset are not a
+        # fixed pad pair - on busy/modded v14 saves (measured: Ragnarok +26 B,
+        # Scorched Earth +31 B) and on every v13 save (extra tables, ~269 KB on
+        # TheCenter) a sequential read lands short of the table. Seek like the
+        # C# reference (SaveHeaderRecord.Read / ReadPre14:
+        # ``archive.Position = nameTableOffset``).
+        # Explicit raise (not assert) so the bound survives ``python -O``.
+        if not 0 <= name_table_offset <= reader.size:
+            raise CorruptDataError(
+                f"ASA name-table offset {name_table_offset} out of range "
+                f"(blob size {reader.size})"
+            )
+        reader.position = name_table_offset
+        self.name_table = self._read_asa_name_table(reader)
 
-    def _read_asa_name_table(
-        self, reader: BinaryReader, sentinel: bool = False
-    ) -> dict[int, str]:
+    def _read_asa_name_table(self, reader: BinaryReader) -> dict[int, str]:
         """Read an ASA name table (FName-hash -> class string) at ``reader``'s position.
 
         Preconditions: ``reader`` is positioned at the table's int32 entry
         count. Postconditions: returns ``{hash: trimmed_class_string}`` (the
         substring after the last ``.``) and advances the reader past the table.
-        ``sentinel`` consumes the extra 4-byte trailer following
-        user-placed-actor entries (``idx == 1``) on the v13 sequential path; it
-        is unused on the v14 seek path.
         """
         name_count = _checked_count(reader, "ASA name table", _MAX_ASA_NAME_TABLE)
         nt: dict[int, str] = {}
@@ -1068,9 +1052,6 @@ class WorldSave:
             raw = reader.read_string()
             # Interned for the same pointer-fast comparisons as the ASE table.
             nt[idx] = sys.intern(raw.rsplit(".", 1)[-1] if "." in raw else raw)
-            if sentinel and idx == 1:
-                # User-placed-actor sentinel: skip the trailing 4-byte tag.
-                reader.skip(4)
         return nt
 
     def _read_asa_actor_locations(self, conn: sqlite3.Connection) -> None:
