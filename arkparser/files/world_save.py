@@ -40,6 +40,7 @@ from ..game_objects.container import GameObjectContainer
 from ..game_objects.game_object import MAX_OBJECT_COUNT, GameObject
 from ..game_objects.location import LocationData
 from ..properties.registry import read_properties, read_properties_partial
+from .embedded_store import EmbeddedStore, load_embedded_store
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +172,9 @@ class WorldSave:
     # matching the legacy ContentContainer.GetApproxDateTimeOf formula:
     # real = file_mtime + (object_time - game_time).
     file_mtime: dt.datetime | None = None
+    # Path the save was loaded from (None when loaded from bytes). Lets
+    # read_embedded_store reopen an eagerly loaded ASA save's database.
+    source_path: Path | None = None
 
     # ASE-specific
     embedded_data: list[EmbeddedData] = field(default_factory=list)
@@ -324,6 +328,7 @@ class WorldSave:
                 reader = BinaryReader.from_file(path)
             save = cls._parse_ase(reader, load_properties, lazy_properties)
         save.file_mtime = mtime
+        save.source_path = path
         return save
 
     # ------------------------------------------------------------------
@@ -498,6 +503,33 @@ class WorldSave:
                         break
             if cryo is not None:
                 yield obj, cryo
+
+    def read_embedded_store(self) -> EmbeddedStore:
+        """Read the player/tribe files packed inside an ASA save.
+
+        Some ASA servers write no ``.arkprofile`` / ``.arktribe`` files and
+        pack them into the save instead (see ``embedded_store``). Not run by
+        :meth:`load`; callers that want the data ask for it, so load cost is
+        unchanged for everyone else.
+
+        Pre: the save was loaded from a path (ASA) or is ASE. Post: returns
+        the current profiles and tribes; ASE saves and saves without a store
+        return an empty :class:`EmbeddedStore`. Reuses the lazy connection
+        when present, otherwise opens and closes a read-only one.
+        """
+        if not self.is_asa:
+            return EmbeddedStore()
+        if self._lazy_conn is not None:
+            return load_embedded_store(self._lazy_conn)
+        assert self.source_path is not None, "ASA saves always load from a path"
+        uri = self.source_path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            store = load_embedded_store(conn)
+        finally:
+            conn.close()
+        assert isinstance(store, EmbeddedStore), "store loader returned wrong type"
+        return store
 
     # ------------------------------------------------------------------
     # Properties

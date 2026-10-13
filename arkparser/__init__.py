@@ -48,7 +48,7 @@ from arkparser.export import (
     export_tribes,
     export_wild,
 )
-from arkparser.files import CloudInventory, Profile, Tribe, WorldSave
+from arkparser.files import CloudInventory, EmbeddedStore, Profile, Tribe, WorldSave
 from arkparser.game_objects import GameObject, GameObjectContainer, LocationData
 
 # Convenience alias - users may know this as "Obelisk" from the game
@@ -61,6 +61,7 @@ __all__ = [
     "CloudInventory",
     "Obelisk",
     "WorldSave",
+    "EmbeddedStore",
     # Cloud-inventory data models
     "UploadedCreature",
     "UploadedItem",
@@ -95,4 +96,4 @@ __all__ = [
     "ArkParseError",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"

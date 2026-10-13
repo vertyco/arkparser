@@ -12,6 +12,7 @@ All parsers support both ASE and ASA formats with automatic detection.
 
 from .base import ArkFile
 from .cloud_inventory import CloudInventory
+from .embedded_store import EmbeddedStore
 from .profile import Profile
 from .tribe import Tribe
 from .world_save import WorldSave
@@ -22,4 +23,5 @@ __all__ = [
     "Tribe",
     "CloudInventory",
     "WorldSave",
+    "EmbeddedStore",
 ]

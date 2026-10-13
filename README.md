@@ -99,6 +99,27 @@ print(f"Parse errors: {save.parse_error_count}")
 print(f"Is ASA: {save.is_asa}")
 ```
 
+### Player/tribe data packed in the save (ASA)
+
+Some ASA servers (Nitrado observed) write no `.arkprofile` / `.arktribe` files.
+The same files are packed inside the `.ark` instead. Read them and attach them
+the same way you would attach sidecar files:
+
+```python
+from arkparser import WorldSave, export_all
+
+save = WorldSave.load("path/to/Ragnarok_WP.ark", lazy_properties=True)
+store = save.read_embedded_store()
+save.profiles, save.tribes = store.profiles, store.tribes
+data = export_all(save)
+```
+
+`EmbeddedStore` holds `profiles`, `tribes`, `superseded_profiles` /
+`superseded_tribes` (old copies the game leaves behind, skipped), and
+`errors` (one line per skipped entry; a bad entry never fails the load). Saves
+from servers that write sidecar files return an empty store. Not run by
+`load()`, so it costs nothing unless called.
+
 ### Low-memory parsing (large saves)
 
 By default every object's property block is parsed up front, which on a busy
@@ -543,6 +564,7 @@ Key methods:
 | `get_object_by_guid(guid)` | `GameObject \| None` | Lookup by GUID (ASA) |
 | `get_actor_location(guid)` | `LocationData \| None` | Actor location by GUID (ASA) |
 | `iter_cryopod_creatures()` | `Iterator[(GameObject, CryopodCreature)]` | Walk filled cryopods |
+| `read_embedded_store()` | `EmbeddedStore` | Player and tribe files packed inside an ASA save (servers that write no `.arkprofile` / `.arktribe`); see "Player/tribe data packed in the save" |
 
 ### Game Objects
 
