@@ -90,6 +90,7 @@ _MAP_CONFIGS: list[MapConfig] = [
     MapConfig("Extinction (Ascended)", "extinction_wp.ark", 50.0, 6850.0, 50.0, 6850.0),
     MapConfig("Ragnarok (Ascended)", "ragnarok_wp.ark", 50.009388, 13100.0, 50.009388, 13100.0),
     MapConfig("Valguero (Ascended)", "valguero_wp.ark", 50.0, 8161.0, 50.0, 8161.0),
+    MapConfig("Genesis (Ascended)", "genesis_wp.ark", 50.0, 10500.0, 50.0, 10500.0),
 
     # Community / Modded Maps
     MapConfig("Astral ARK", "astralark.ark", 50.0, 2000.0, 50.0, 2000.0),
