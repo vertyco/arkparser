@@ -22,6 +22,16 @@ class TestBinaryReader:
         with pytest.raises(EndOfDataError):
             reader.read_float()
 
+    def test_utf16_cut_off_emoji_reads_as_replacement_char(self) -> None:
+        # ARK truncates long names mid-emoji, leaving a lone high surrogate
+        # ("Rex" + first half of U+1F996). Must decode like .NET (U+FFFD) and
+        # leave the cursor on the next field, not raise.
+        text = "Rex".encode("utf-16-le") + b"\x3e\xd8" + b"\x00\x00"
+        data = (-(len(text) // 2)).to_bytes(4, "little", signed=True) + text + (7).to_bytes(4, "little")
+        reader = BinaryReader.from_bytes(data)
+        assert reader.read_string() == "Rex�"
+        assert reader.read_int32() == 7
+
     def test_truncated_double_raises_end_of_data(self) -> None:
         reader = BinaryReader.from_bytes(b"\x00" * 7)
         with pytest.raises(EndOfDataError):

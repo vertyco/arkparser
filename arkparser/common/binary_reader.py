@@ -350,7 +350,10 @@ class BinaryReader:
                 raise EndOfDataError(byte_count, self._size - self._pos)
             data = self._buf[self._pos:end - 2]  # exclude null terminator
             self._pos = end
-            return data.decode("utf-16-le")
+            # ARK cuts long names mid-emoji, leaving a lone surrogate. "replace"
+            # (U+FFFD) matches .NET Encoding.Unicode in the legacy exporter;
+            # "surrogatepass" would keep text that orjson/UTF-8 writers reject.
+            return data.decode("utf-16-le", errors="replace")
         end = self._pos + length
         if end > self._size:
             raise EndOfDataError(length, self._size - self._pos)
